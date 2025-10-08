@@ -26,13 +26,6 @@ AfricaX is a Streamlit-powered tasting passport that helps our crew track every 
 
    The app will open in your browser at `http://localhost:8501`.
 
-   Prefer running everything with a single Python command? Once dependencies are
-   installed you can also start the dashboard with:
-
-   ```bash
-   python app.py
-   ```
-
 ## Updating the tasting log
 
 All restaurant visits live in [`data/restaurants.csv`](data/restaurants.csv). Add new rows with the country, ISO3 code, city, restaurant name, rating, visit date, notes, and coordinates. When the file updates, Streamlit reloads and displays the new spot immediately.

@@ -158,17 +158,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Allow the app to be launched via ``python app.py`` in addition to
-    # ``streamlit run app.py`` for folks who prefer a single command.
-    try:
-        from streamlit.web import bootstrap
-
-        app_path = str(Path(__file__).resolve())
-        import sys
-
-        sys.argv = ["streamlit", "run", app_path]
-        bootstrap.run(app_path, "", [], {})
-    except ModuleNotFoundError:
-        raise SystemExit(
-            "Streamlit is required to launch this app. Install dependencies with 'pip install -r requirements.txt'"
-        )
+    main()
