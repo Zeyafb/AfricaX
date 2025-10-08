@@ -141,7 +141,7 @@ def write_visit(row: Dict) -> None:
 
 def update_visit(index: int, row: Dict) -> None:
     """Update an existing visit at the given index."""
-    df = pd.read_csv(DATA_PATH, dtype="string", keep_default_na=False)
+    df = pd.read_csv(DATA_PATH, keep_default_na=False)
     
     # date formatting
     dt = row.get("Visit Date")
@@ -153,27 +153,27 @@ def update_visit(index: int, row: Dict) -> None:
         except Exception:
             pass
     
-    # per-person rating bounds
+    # per-person rating bounds and convert to string
     for r in RATERS:
         v = pd.to_numeric(row.get(r, None), errors="coerce")
-        row[r] = "" if pd.isna(v) else float(min(max(v, 1.0), 10.0))
+        row[r] = "" if pd.isna(v) else str(float(min(max(v, 1.0), 10.0)))
     
-    # Group_Rating: mean of available individual ratings
+    # Group_Rating: mean of available individual ratings, convert to string
     vals = [pd.to_numeric(row[r], errors="coerce") for r in RATERS]
     vals = [float(v) for v in vals if pd.notna(v)]
-    row["Group_Rating"] = "" if not vals else round(sum(vals) / len(vals), 2)
+    row["Group_Rating"] = "" if not vals else str(round(sum(vals) / len(vals), 2))
     
-    # Update the row
+    # Update the row - ensure all values are strings
     for col in CSV_COLUMNS:
         if col in row:
-            df.at[index, col] = row[col]
+            df.at[index, col] = str(row[col]) if row[col] is not None else ""
     
     df.to_csv(DATA_PATH, index=False)
 
 
 def delete_visit(index: int) -> None:
     """Delete a visit at the given index."""
-    df = pd.read_csv(DATA_PATH, dtype="string", keep_default_na=False)
+    df = pd.read_csv(DATA_PATH, keep_default_na=False)
     df = df.drop(index)
     df.to_csv(DATA_PATH, index=False)
 
