@@ -1,11 +1,4 @@
-Country,ISO_A3,City,Restaurant,Rating,Visit Date,Notes,Latitude,Longitude
-Ethiopia,ETH,Silver Spring,Lucy Ethiopian Restaurant,4.5,2024-02-10,"Incredible injera sampler with spicy kitfo.",38.9977,-77.0262
-Nigeria,NGA,Washington DC,Bukom Cafe,4.2,2024-03-05,"Lively atmosphere and tasty suya skewers.",38.9190,-77.0414
-Senegal,SEN,Arlington,Chez Dior,4.7,2024-01-18,"Thieboudienne was perfectly seasoned.",38.8904,-77.0844
-Ghana,GHA,Washington DC,Sankofa Cafe,4.0,2023-12-09,"Great jollof and smoothies; limited seating.",38.9491,-77.0251
-Morocco,MAR,Alexandria,Kasbah Moroccan Lounge,4.6,2024-04-12,"Beautiful decor and fragrant tagines.",38.8048,-77.0469
-Eritrea,ERI,Washington DC,Dukem Restaurant,4.3,2024-05-03,"Live music nights make it memorable.",38.9097,-77.0228
-Somalia,SOM,Alexandria,Sabah Restaurant,4.1,2024-02-24,"Savory sambusas and welcoming staff.",38.8048,-77.0469
-South Africa,ZAF,Washington DC,South Africa House,4.4,2024-01-28,"Bobotie with yellow rice was a standout.",38.9240,-77.0325
-Kenya,KEN,Silver Spring,Serengeti Restaurant,4.5,2024-03-22,"Nyama choma cooked to perfection.",38.9907,-77.0261
-Côte d'Ivoire,CIV,Hyattsville,Chez Dior Express,4.0,2024-04-30,"Attiéké and fried fish combo hit the spot.",38.9559,-76.9455
+Country,ISO_A3,Restaurant,Fayez,Muhammad,Seth,Ian,Shubham,Group_Rating,Visit Date,Notes,Dishes
+Morocco,MAR,Fettoosh,8.0,8.0,8.0,8.0,8.0,8.0,10/08/2025,,
+Egypt,EGY,King Of Koshary,8.0,8.0,8.0,8.0,8.0,8.0,10/08/2025,,
+Senegal,SEN,Chez Dior,8.0,8.0,8.0,8.0,8.0,8.0,10/08/2025,,

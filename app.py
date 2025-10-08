@@ -1,157 +1,350 @@
+from __future__ import annotations
+
 from pathlib import Path
+from datetime import datetime
+from typing import Optional, Dict
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
-DATA_PATH = Path(__file__).parent / "data" / "restaurants.csv"
+# Leaflet map + geo
+import folium
+from streamlit_folium import st_folium
+import geopandas as gpd
+from shapely.geometry import Point
 
-st.set_page_config(
-    page_title="AfricaX Restaurant Tracker",
-    page_icon="🍽️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+APP_TITLE = "🍽️ AfricaX – African Restaurant Passport"
+DATA_DIR = Path(__file__).parent / "data"
+DATA_PATH = DATA_DIR / "restaurants.csv"
+# Natural Earth shapefile you extracted
+AFRICA_SHP = DATA_DIR / "ne_110m_admin_0_countries.shp"
+
+# Team members for per-person ratings (1–10)
+RATERS = ["Fayez", "Muhammad", "Seth", "Ian", "Shubham"]
+
+st.set_page_config(page_title="AfricaX", page_icon="🍽️", layout="wide")
+
+
+# ---------- Data ----------
 
 @st.cache_data
-def load_restaurants() -> pd.DataFrame:
-    df = pd.read_csv(DATA_PATH, parse_dates=["Visit Date"])
-    df.sort_values("Visit Date", ascending=False, inplace=True)
+def load_geo() -> gpd.GeoDataFrame:
+    """Load shapefile and keep only Africa (name, iso_a3, geometry)."""
+    if not AFRICA_SHP.exists():
+        st.error("Missing Natural Earth shapefile at data/ne_110m_admin_0_countries.shp (and sidecar files).")
+        st.stop()
+
+    gdf = gpd.read_file(AFRICA_SHP)
+
+    # Filter to Africa only
+    continent_col = next((c for c in ["CONTINENT", "continent", "REGION_UN", "region_un"] if c in gdf.columns), None)
+    if continent_col:
+        gdf = gdf[gdf[continent_col].str.strip().str.lower() == "africa"]
+
+
+    # Standardize name and ISO3
+    name_col = next((c for c in ["NAME", "ADMIN", "name"] if c in gdf.columns), None)
+    iso_col = next((c for c in ["ISO_A3", "ADM0_A3", "iso_a3"] if c in gdf.columns), None)
+    if not name_col or not iso_col:
+        st.error("Shapefile is missing expected columns (NAME/ADMIN and ISO_A3/ADM0_A3).")
+        st.stop()
+
+    africa = gdf[[name_col, iso_col, "geometry"]].rename(columns={name_col: "name", iso_col: "iso_a3"}).copy()
+    africa["name"] = africa["name"].astype(str).str.strip()
+    africa["iso_a3"] = africa["iso_a3"].astype(str).str.upper().str.strip()
+    africa = africa.reset_index(drop=True)
+    return africa
+
+
+CSV_COLUMNS = [
+    "Country", "ISO_A3", "Restaurant",
+    *RATERS,
+    "Group_Rating",
+    "Visit Date", "Notes", "Dishes"
+]
+
+
+@st.cache_data
+def load_visits() -> pd.DataFrame:
+    """Load visits CSV; coerce schema; compute group averages; parse dates (MM/DD/YYYY)."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not DATA_PATH.exists():
+        pd.DataFrame(columns=CSV_COLUMNS).to_csv(DATA_PATH, index=False)
+
+    df = pd.read_csv(DATA_PATH, dtype="string", keep_default_na=False)
+
+    # Ensure all expected columns exist
+    for col in CSV_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Ratings: per-person numeric 1–10, compute Group_Rating if missing
+    for r in RATERS:
+        df[r] = pd.to_numeric(df[r], errors="coerce").clip(1, 10)
+
+    # If legacy 'Rating' column existed, use it to fill Group_Rating once
+    if "Rating" in df.columns and df["Rating"].notna().any():
+        df["Group_Rating"] = pd.to_numeric(df["Rating"], errors="coerce") * 2.0  # in case legacy 1–5
+        df.drop(columns=["Rating"], inplace=True)
+
+    # Compute group rating = mean of available individual ratings, else use given Group_Rating
+    indiv = df[RATERS].astype(float)
+    df["Group_Rating"] = pd.to_numeric(df["Group_Rating"], errors="coerce")
+    computed = indiv.mean(axis=1, skipna=True)
+    df.loc[computed.notna(), "Group_Rating"] = computed
+    df["Group_Rating"] = df["Group_Rating"].clip(1, 10)
+
+    # Dates: parse robustly; display/save as MM/DD/YYYY
+    # Try MM/DD/YYYY first, then other
+    parsed = pd.to_datetime(df["Visit Date"], format="%m/%d/%Y", errors="coerce")
+    fallback = pd.to_datetime(df["Visit Date"], errors="coerce")
+    df["Visit Date"] = parsed.fillna(fallback)
+
+    # Only real visits: require Restaurant + some rating info
+    has_any_rating = df[RATERS + ["Group_Rating"]].astype(float).notna().any(axis=1)
+    df = df[(df["Restaurant"].str.len() > 0) & has_any_rating].copy()
+
+    # Normalize ISO
+    df["ISO_A3"] = df["ISO_A3"].astype("string").str.upper()
+
+    df.sort_values(["Visit Date", "Country", "Restaurant"], ascending=[False, True, True], inplace=True, na_position="last")
     return df
 
 
-def compute_country_summary(df: pd.DataFrame) -> pd.DataFrame:
-    summary = (
-        df.groupby(["Country", "ISO_A3"], as_index=False)
-        .agg(
-            Visits=("Restaurant", "count"),
-            Average_Rating=("Rating", "mean"),
-            Latest_Visit=("Visit Date", "max"),
-        )
-        .sort_values("Visits", ascending=False)
-    )
-    summary["Average_Rating"] = summary["Average_Rating"].round(2)
-    return summary
+def write_visit(row: Dict) -> None:
+    """Append a single visit row to the CSV, saving date as MM/DD/YYYY."""
+    out = {col: row.get(col, "") for col in CSV_COLUMNS}
+    # date formatting
+    dt = row.get("Visit Date")
+    if isinstance(dt, (pd.Timestamp, datetime)):
+        out["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
+    elif isinstance(dt, str):
+        try:
+            out["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
+        except Exception:
+            out["Visit Date"] = dt
+
+    # per-person rating bounds
+    for r in RATERS:
+        v = pd.to_numeric(out.get(r, None), errors="coerce")
+        out[r] = "" if pd.isna(v) else float(min(max(v, 1.0), 10.0))
+
+    # Group_Rating: mean of available individual ratings
+    vals = [pd.to_numeric(out[r], errors="coerce") for r in RATERS]
+    vals = [float(v) for v in vals if pd.notna(v)]
+    out["Group_Rating"] = "" if not vals else round(sum(vals) / len(vals), 2)
+
+    df = pd.DataFrame([out], columns=CSV_COLUMNS)
+    header = not DATA_PATH.exists() or DATA_PATH.stat().st_size == 0
+    df.to_csv(DATA_PATH, mode="a", header=header, index=False)
 
 
-def africa_choropleth(summary: pd.DataFrame):
-    fig = px.choropleth(
-        summary,
-        locations="ISO_A3",
-        color="Visits",
-        hover_name="Country",
-        hover_data={
-            "Visits": True,
-            "Average_Rating": True,
-            "Latest_Visit": summary["Latest_Visit"].dt.strftime("%b %d, %Y"),
-            "ISO_A3": False,
-        },
-        color_continuous_scale="YlOrRd",
-        scope="africa",
-        title="Countries we've tasted",
-    )
-    fig.update_layout(margin=dict(l=0, r=0, t=60, b=0))
-    return fig
+# ---------- Map helpers ----------
+
+def make_map(africa: gpd.GeoDataFrame, visited_isos: set) -> folium.Map:
+    # Fit to Africa and lock viewport to Africa bounds
+    minx, miny, maxx, maxy = africa.total_bounds  # lon/lat
+    center = [(miny + maxy) / 2.0, (minx + maxx) / 2.0]
+
+    m = folium.Map(location=center, zoom_start=3, tiles="cartodbpositron", prefer_canvas=True, no_wrap=True)
+    
+    def style_function(feat):
+        iso = feat["properties"].get("iso_a3", "")
+        if iso in visited_isos:
+            return {"fillColor": "#4CAF50", "color": "#2E7D32", "weight": 2, "fillOpacity": 0.7}
+        else:
+            return {"fillColor": "#f2f2f2", "color": "#555", "weight": 1, "fillOpacity": 0.6}
+    
+    folium.GeoJson(
+        africa.to_json(),
+        name="Africa",
+        style_function=style_function,
+        highlight_function=lambda feat: {"weight": 2, "color": "#333", "fillColor": "#ffd24d", "fillOpacity": 0.7},
+        tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["Country"], sticky=False),
+    ).add_to(m)
+
+    m.fit_bounds([[miny, minx], [maxy, maxx]])
+    js = f"""
+    <script>
+    var map = window.map_{id(m)};
+    if (map) {{
+        map.setMaxBounds([[{miny - 5}, {minx - 5}], [{maxy + 5}, {maxx + 5}]]);
+        map.options.worldCopyJump = false;
+        map.options.maxBoundsViscosity = 1.0;
+    }}
+    </script>
+    """
+    m.get_root().html.add_child(folium.Element(js))
+    return m
 
 
-def africa_restaurant_map(df: pd.DataFrame):
-    fig = px.scatter_geo(
-        df,
-        lat="Latitude",
-        lon="Longitude",
-        color="Rating",
-        size="Rating",
-        size_max=18,
-        hover_name="Restaurant",
-        hover_data={
-            "Country": True,
-            "City": True,
-            "Rating": True,
-            "Visit Date": df["Visit Date"].dt.strftime("%b %d, %Y"),
-            "Latitude": False,
-            "Longitude": False,
-        },
-        color_continuous_scale="deep",
-        range_color=(3.5, 5),
-        projection="natural earth",
-        scope="africa",
-        title="Restaurant stops",
-    )
-    fig.update_layout(margin=dict(l=0, r=0, t=60, b=0))
-    return fig
+def country_at_click(africa: gpd.GeoDataFrame, lat: float, lon: float) -> Optional[dict]:
+    """Return {'name':..., 'iso_a3':...} of the polygon containing the point, else None."""
+    pt = Point(lon, lat)  # shapely uses x=lon, y=lat
+    idx = africa.sindex.query(pt, predicate="intersects")
+    if len(idx) == 0:
+        return None
+    subset = africa.iloc[idx]
+    hit = subset[subset.contains(pt)]
+    if hit.empty:
+        return None
+    row = hit.iloc[0]
+    return {"name": row["name"], "iso_a3": row["iso_a3"]}
 
+
+# ---------- UI ----------
+
+def kpis(visits: pd.DataFrame):
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Countries covered", f"{visits['Country'].nunique():,}")
+    c2.metric("Avg rating", f"{visits['Group_Rating'].astype(float).mean():.2f}" if not visits.empty else "–")
+    last = pd.to_datetime(visits["Visit Date"], errors="coerce").max()
+    c3.metric("Latest visit", last.strftime("%m/%d/%Y") if pd.notna(last) else "–")
+
+
+
+def country_panel(visits: pd.DataFrame, selected: Optional[dict]):
+    if selected is None:
+        st.subheader("Select a country")
+        st.info("Click a country on the map to view or add a visit.")
+        return
+
+    name, iso = selected["name"], selected["iso_a3"]
+    st.subheader(f"{name}")
+    rows = visits[visits["ISO_A3"] == iso].copy()
+
+    if rows.empty:
+        st.info("No visits logged yet. Add one below.")
+        with st.form(key=f"visit_form_{iso}", clear_on_submit=True):
+            restaurant = st.text_input("Restaurant", placeholder="e.g., Lucy Ethiopian Restaurant")
+
+
+            st.markdown("**Per-person ratings (1–10)**")
+            per_person = {}
+            for r in RATERS:
+                per_person[r] = st.slider(r, min_value=1.0, max_value=10.0, value=8.0, step=0.1, key=f"{r}_{iso}")
+
+            visit_date = st.date_input("Visit date (MM/DD/YYYY)")
+            dishes = st.text_input("Dishes (comma-separated)", placeholder="injera, kitfo, tibs")
+            notes = st.text_area("Notes", placeholder="Highlights, who joined, standout dishes...")
+
+            # Show computed group avg live
+            vals = [per_person[r] for r in RATERS if per_person[r] is not None]
+            group_avg = round(sum(vals) / len(vals), 2) if vals else None
+            st.caption(f"Computed group average: **{group_avg}**" if group_avg is not None else "—")
+
+            submitted = st.form_submit_button("Add visit")
+            if submitted:
+                if restaurant.strip() == "":
+                    st.error("Restaurant name is required.")
+                else:
+                    row = {
+                        "Country": name,
+                        "ISO_A3": iso,
+                        "Restaurant": restaurant.strip(),
+                        "Visit Date": pd.to_datetime(visit_date),
+                        "Notes": notes.strip(),
+                        "Dishes": dishes.strip(),
+                        "Group_Rating": group_avg,
+                    }
+
+
+                    for r in RATERS:
+                        row[r] = per_person[r]
+                    write_visit(row)
+                    st.success("Visit added.")
+                    st.cache_data.clear()
+                    st.rerun()
+    else:
+        # Display country visits with per-person ratings and group avg
+        display = rows.assign(
+            **{
+                "Visit Date": pd.to_datetime(rows["Visit Date"], errors="coerce").dt.strftime("%m/%d/%Y"),
+            }
+        )[["Restaurant", *RATERS, "Group_Rating", "Visit Date", "Dishes", "Notes"]]
+
+
+        st.dataframe(display, use_container_width=True, hide_index=True)
+
+        # Country summary
+        st.markdown("**Summary**")
+        s1, s2, s3 = st.columns(3)
+        s1.metric("Visits", f"{len(display):,}")
+        s2.metric("Avg rating", f"{pd.to_numeric(display['Group_Rating'], errors='coerce').mean():.2f}")
+        latest = pd.to_datetime(rows["Visit Date"], errors="coerce").max()
+        s3.metric("Latest visit", latest.strftime("%m/%d/%Y") if pd.notna(latest) else "–")
+
+        with st.expander("Add another visit"):
+            with st.form(key=f"visit_form_more_{iso}", clear_on_submit=True):
+                restaurant = st.text_input("Restaurant", key=f"rest_{iso}")
+
+
+                st.markdown("**Per-person ratings (1–10)**")
+                per_person = {}
+                for r in RATERS:
+                    per_person[r] = st.slider(r, min_value=1.0, max_value=10.0, value=8.0, step=0.1, key=f"{r}_more_{iso}")
+
+                visit_date = st.date_input("Visit date (MM/DD/YYYY)", key=f"date_{iso}")
+                dishes = st.text_input("Dishes (comma-separated)", key=f"dish_{iso}")
+                notes = st.text_area("Notes", key=f"note_{iso}")
+
+                vals = [per_person[r] for r in RATERS if per_person[r] is not None]
+                group_avg = round(sum(vals) / len(vals), 2) if vals else None
+                st.caption(f"Computed group average: **{group_avg}**" if group_avg is not None else "—")
+
+                submitted = st.form_submit_button("Add visit")
+                if submitted:
+                    if restaurant.strip() == "":
+                        st.error("Restaurant name is required.")
+                    else:
+                        row = {
+                            "Country": name,
+                            "ISO_A3": iso,
+                            "Restaurant": restaurant.strip(),
+                            "Visit Date": pd.to_datetime(visit_date),
+                            "Notes": notes.strip(),
+                            "Dishes": dishes.strip(),
+                            "Group_Rating": group_avg,
+                        }
+                        for r in RATERS:
+                            row[r] = per_person[r]
+                        write_visit(row)
+                        st.success("Visit added.")
+                        st.cache_data.clear()
+                        st.rerun()
+
+
+# ---------- App ----------
 
 def main():
-    df = load_restaurants()
-    summary = compute_country_summary(df)
+    st.title(APP_TITLE)
+    st.caption("Click a country (Africa only) to view logged visits or add a new one. Dates use MM/DD/YYYY; ratings are per-person (1–10) with group average auto-computed.")
 
-    st.title("🍽️ AfricaX – African Restaurant Passport")
-    st.markdown(
-        """
-        Track your journey as you taste your way across the African continent—one local spot at a time.
-        Filter by country, rating, or visit date to explore highlights from your adventures and plan where to go next.
-        """
-    )
+    africa = load_geo()
+    visits = load_visits()
+    kpis(visits)
 
-    with st.sidebar:
-        st.header("Filter your journey")
-        countries = st.multiselect(
-            "Countries", options=sorted(df["Country"].unique()), default=sorted(df["Country"].unique())
-        )
-        min_rating, max_rating = float(df["Rating"].min()), float(df["Rating"].max())
-        rating_range = st.slider(
-            "Rating", min_value=1.0, max_value=5.0, value=(min_rating, max_rating), step=0.1
-        )
-        min_date, max_date = df["Visit Date"].min(), df["Visit Date"].max()
-        visit_range = st.date_input(
-            "Visit window",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-        )
-        search_text = st.text_input("Search restaurants or notes")
-        st.info(
-            "Use the filters above to focus on the next country you want to explore or to revisit favorites."
-        )
+    col_map, col_panel = st.columns([3, 2], gap="large")
 
-    filtered = df[df["Country"].isin(countries)]
-    filtered = filtered[(filtered["Rating"] >= rating_range[0]) & (filtered["Rating"] <= rating_range[1])]
-    filtered = filtered[
-        (filtered["Visit Date"] >= pd.to_datetime(visit_range[0]))
-        & (filtered["Visit Date"] <= pd.to_datetime(visit_range[1]))
-    ]
-    if search_text:
-        mask = filtered.apply(lambda row: search_text.lower() in row.to_string().lower(), axis=1)
-        filtered = filtered[mask]
+    with col_map:
+        visited_isos = set(visits["ISO_A3"].unique())
+        m = make_map(africa, visited_isos)
+        map_state = st_folium(m, width=None, height=650)
+        if map_state and map_state.get("last_object_clicked"):
+            lat = map_state["last_object_clicked"]["lat"]
+            lon = map_state["last_object_clicked"]["lng"]
+            hit = country_at_click(africa, lat, lon)
+            if hit:
+                st.session_state["selected_country"] = hit
 
-    st.subheader("Where have we been?")
-    st.plotly_chart(africa_choropleth(summary), use_container_width=True)
-
-    st.subheader("Restaurant map")
-    st.plotly_chart(africa_restaurant_map(filtered), use_container_width=True)
-
-    st.subheader("Tasting log")
-    st.dataframe(
-        filtered.assign(**{"Visit Date": filtered["Visit Date"].dt.strftime("%b %d, %Y")})[
-            ["Visit Date", "Country", "City", "Restaurant", "Rating", "Notes"]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    with col_panel:
+        selected = st.session_state.get("selected_country")
+        country_panel(visits, selected)
 
     st.markdown("---")
-    st.markdown("### Add your next spot")
-    st.markdown(
-        """
-        Ready to log another outing? Update `data/restaurants.csv` with the new country, restaurant, and coordinates.
-        Streamlit automatically reloads the data when the file changes, so you'll see the new pin on the map instantly when the app reruns.
-        """
-    )
-
-    st.markdown("#### Export your data")
     st.download_button(
-        label="Download tasting log (CSV)",
-        data=df.to_csv(index=False),
+        "Download all visits (CSV)",
+        data=visits.to_csv(index=False),
         file_name="africax_restaurants.csv",
         mime="text/csv",
     )
