@@ -139,6 +139,45 @@ def write_visit(row: Dict) -> None:
     df.to_csv(DATA_PATH, mode="a", header=header, index=False)
 
 
+def update_visit(index: int, row: Dict) -> None:
+    """Update an existing visit at the given index."""
+    df = pd.read_csv(DATA_PATH, dtype="string", keep_default_na=False)
+    
+    # date formatting
+    dt = row.get("Visit Date")
+    if isinstance(dt, (pd.Timestamp, datetime)):
+        row["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
+    elif isinstance(dt, str):
+        try:
+            row["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
+        except Exception:
+            pass
+    
+    # per-person rating bounds
+    for r in RATERS:
+        v = pd.to_numeric(row.get(r, None), errors="coerce")
+        row[r] = "" if pd.isna(v) else float(min(max(v, 1.0), 10.0))
+    
+    # Group_Rating: mean of available individual ratings
+    vals = [pd.to_numeric(row[r], errors="coerce") for r in RATERS]
+    vals = [float(v) for v in vals if pd.notna(v)]
+    row["Group_Rating"] = "" if not vals else round(sum(vals) / len(vals), 2)
+    
+    # Update the row
+    for col in CSV_COLUMNS:
+        if col in row:
+            df.at[index, col] = row[col]
+    
+    df.to_csv(DATA_PATH, index=False)
+
+
+def delete_visit(index: int) -> None:
+    """Delete a visit at the given index."""
+    df = pd.read_csv(DATA_PATH, dtype="string", keep_default_na=False)
+    df = df.drop(index)
+    df.to_csv(DATA_PATH, index=False)
+
+
 # ---------- Map helpers ----------
 
 def make_map(africa: gpd.GeoDataFrame, visited_isos: set) -> folium.Map:
@@ -224,14 +263,15 @@ def country_panel(visits: pd.DataFrame, selected: Optional[dict]):
             for r in RATERS:
                 per_person[r] = st.slider(r, min_value=1.0, max_value=10.0, value=8.0, step=0.1, key=f"{r}_{iso}")
 
-            visit_date = st.date_input("Visit date (MM/DD/YYYY)")
-            dishes = st.text_input("Dishes (comma-separated)", placeholder="injera, kitfo, tibs")
-            notes = st.text_area("Notes", placeholder="Highlights, who joined, standout dishes...")
-
-            # Show computed group avg live
+            # Show computed group avg live as headline
             vals = [per_person[r] for r in RATERS if per_person[r] is not None]
             group_avg = round(sum(vals) / len(vals), 2) if vals else None
-            st.caption(f"Computed group average: **{group_avg}**" if group_avg is not None else "—")
+            if group_avg is not None:
+                st.markdown(f"### 🎯 Group Average: **{group_avg}/10**")
+            
+            visit_date = st.date_input("Visit date", format="MM/DD/YYYY")
+            dishes = st.text_input("Dishes (comma-separated)", placeholder="injera, kitfo, tibs")
+            notes = st.text_area("Notes", placeholder="Highlights, who joined, standout dishes...")
 
             submitted = st.form_submit_button("Add visit")
             if submitted:
@@ -274,6 +314,77 @@ def country_panel(visits: pd.DataFrame, selected: Optional[dict]):
         latest = pd.to_datetime(rows["Visit Date"], errors="coerce").max()
         s3.metric("Latest visit", latest.strftime("%m/%d/%Y") if pd.notna(latest) else "–")
 
+        # Edit existing visits
+        with st.expander("Edit or delete visits"):
+            for idx, (orig_idx, row) in enumerate(rows.iterrows()):
+                st.markdown(f"**{row['Restaurant']}** — {pd.to_datetime(row['Visit Date'], errors='coerce').strftime('%m/%d/%Y') if pd.notna(row['Visit Date']) else 'N/A'}")
+                
+                col1, col2 = st.columns([4, 1])
+                
+                with col1:
+                    with st.form(key=f"edit_form_{orig_idx}"):
+                        restaurant = st.text_input("Restaurant", value=row["Restaurant"], key=f"edit_rest_{orig_idx}")
+                        
+                        st.markdown("**Per-person ratings (1–10)**")
+                        per_person = {}
+                        for r in RATERS:
+                            curr_val = pd.to_numeric(row[r], errors="coerce")
+                            per_person[r] = st.slider(
+                                r, 
+                                min_value=1.0, 
+                                max_value=10.0, 
+                                value=float(curr_val) if pd.notna(curr_val) else 8.0, 
+                                step=0.1, 
+                                key=f"edit_{r}_{orig_idx}"
+                            )
+                        
+                        vals = [per_person[r] for r in RATERS if per_person[r] is not None]
+                        group_avg = round(sum(vals) / len(vals), 2) if vals else None
+                        if group_avg is not None:
+                            st.markdown(f"### 🎯 Group Average: **{group_avg}/10**")
+                        
+                        visit_date = st.date_input(
+                            "Visit date", 
+                            value=pd.to_datetime(row["Visit Date"], errors="coerce") if pd.notna(row["Visit Date"]) else datetime.now(),
+                            format="MM/DD/YYYY",
+                            key=f"edit_date_{orig_idx}"
+                        )
+                        dishes = st.text_input("Dishes (comma-separated)", value=row["Dishes"], key=f"edit_dish_{orig_idx}")
+                        notes = st.text_area("Notes", value=row["Notes"], key=f"edit_note_{orig_idx}")
+                        
+                        update_btn = st.form_submit_button("Update")
+                        if update_btn:
+                            if restaurant.strip() == "":
+                                st.error("Restaurant name is required.")
+                            else:
+                                updated_row = {
+                                    "Country": name,
+                                    "ISO_A3": iso,
+                                    "Restaurant": restaurant.strip(),
+                                    "Visit Date": pd.to_datetime(visit_date),
+                                    "Notes": notes.strip(),
+                                    "Dishes": dishes.strip(),
+                                    "Group_Rating": group_avg,
+                                }
+                                for r in RATERS:
+                                    updated_row[r] = per_person[r]
+                                update_visit(orig_idx, updated_row)
+                                st.success("Visit updated.")
+                                st.cache_data.clear()
+                                st.rerun()
+                
+                with col2:
+                    st.write("")
+                    st.write("")
+                    if st.button("🗑️ Delete", key=f"delete_{orig_idx}", type="secondary"):
+                        delete_visit(orig_idx)
+                        st.success("Visit deleted.")
+                        st.cache_data.clear()
+                        st.rerun()
+                
+                if idx < len(rows) - 1:
+                    st.divider()
+
         with st.expander("Add another visit"):
             with st.form(key=f"visit_form_more_{iso}", clear_on_submit=True):
                 restaurant = st.text_input("Restaurant", key=f"rest_{iso}")
@@ -284,13 +395,14 @@ def country_panel(visits: pd.DataFrame, selected: Optional[dict]):
                 for r in RATERS:
                     per_person[r] = st.slider(r, min_value=1.0, max_value=10.0, value=8.0, step=0.1, key=f"{r}_more_{iso}")
 
-                visit_date = st.date_input("Visit date (MM/DD/YYYY)", key=f"date_{iso}")
-                dishes = st.text_input("Dishes (comma-separated)", key=f"dish_{iso}")
-                notes = st.text_area("Notes", key=f"note_{iso}")
-
                 vals = [per_person[r] for r in RATERS if per_person[r] is not None]
                 group_avg = round(sum(vals) / len(vals), 2) if vals else None
-                st.caption(f"Computed group average: **{group_avg}**" if group_avg is not None else "—")
+                if group_avg is not None:
+                    st.markdown(f"### 🎯 Group Average: **{group_avg}/10**")
+
+                visit_date = st.date_input("Visit date", format="MM/DD/YYYY", key=f"date_{iso}")
+                dishes = st.text_input("Dishes (comma-separated)", key=f"dish_{iso}")
+                notes = st.text_area("Notes", key=f"note_{iso}")
 
                 submitted = st.form_submit_button("Add visit")
                 if submitted:
