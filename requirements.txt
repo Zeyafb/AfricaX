@@ -6,3 +6,5 @@ geopandas>=0.14
 shapely>=2.0
 pyproj>=3.6
 fiona>=1.9
+gspread>=6.0
+google-auth>=2.25

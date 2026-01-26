@@ -1,0 +1,26 @@
+# Streamlit secrets (never commit!)
+.streamlit/secrets.toml
+
+# Service account JSON keys
+*.json
+!package.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

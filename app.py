@@ -6,6 +6,8 @@ from typing import Optional, Dict
 
 import pandas as pd
 import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Leaflet map + geo
 import folium
@@ -13,16 +15,170 @@ from streamlit_folium import st_folium
 import geopandas as gpd
 from shapely.geometry import Point
 
-APP_TITLE = "🍽️ AfricaX – African Restaurant Passport"
+APP_TITLE = "AfricaX - African Restaurant Passport"
 DATA_DIR = Path(__file__).parent / "data"
-DATA_PATH = DATA_DIR / "restaurants.csv"
-# Natural Earth shapefile you extracted
+# Natural Earth shapefile
 AFRICA_SHP = DATA_DIR / "ne_110m_admin_0_countries.shp"
 
-# Team members for per-person ratings (1–10)
-RATERS = ["Fayez", "Muhammad", "Seth", "Ian", "Shubham"]
+# Google Sheets column order
+SHEET_COLUMNS = ["Country", "ISO_A3", "Restaurant", "Visit Date", "Dishes", "Notes"]
 
 st.set_page_config(page_title="AfricaX", page_icon="🍽️", layout="wide")
+
+
+# ---------- Custom CSS ----------
+
+def inject_css():
+    """Inject custom CSS for polished styling."""
+    st.markdown("""
+    <style>
+    /* Main container spacing */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+
+    /* KPI metrics styling */
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, #F5EFE6 0%, #FEFCF8 100%);
+        border: 1px solid #E8DCC4;
+        border-radius: 12px;
+        padding: 1rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+
+    [data-testid="stMetricLabel"] {
+        color: #666;
+        font-size: 0.85rem;
+        font-weight: 500;
+    }
+
+    [data-testid="stMetricValue"] {
+        color: #2C2C2C;
+        font-size: 1.8rem;
+        font-weight: 600;
+    }
+
+    /* Map container */
+    [data-testid="stVerticalBlock"] iframe {
+        border-radius: 16px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }
+
+    /* Panel styling */
+    .stExpander {
+        background: #FEFCF8;
+        border: 1px solid #E8DCC4;
+        border-radius: 12px;
+    }
+
+    /* Form inputs */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        border-radius: 8px;
+        border: 1px solid #E8DCC4;
+    }
+
+    .stTextInput > div > div > input:focus,
+    .stTextArea > div > div > textarea:focus {
+        border-color: #D4A574;
+        box-shadow: 0 0 0 2px rgba(212, 165, 116, 0.2);
+    }
+
+    /* Buttons */
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    /* Download button */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #4A7C59 0%, #3D6B4A 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+    }
+
+    /* Dataframe */
+    [data-testid="stDataFrame"] {
+        border-radius: 12px;
+        overflow: hidden;
+    }
+
+    /* Dividers */
+    hr {
+        border: none;
+        border-top: 1px solid #E8DCC4;
+        margin: 1.5rem 0;
+    }
+
+    /* Subheader styling */
+    h2 {
+        color: #2C2C2C;
+        font-weight: 600;
+        border-bottom: 2px solid #D4A574;
+        padding-bottom: 0.5rem;
+    }
+
+    /* Info boxes */
+    .stAlert {
+        border-radius: 10px;
+    }
+
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# ---------- Google Sheets Backend ----------
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+
+@st.cache_resource
+def get_gsheet_client():
+    """Create authenticated gspread client from Streamlit secrets."""
+    try:
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=SCOPES
+        )
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"Failed to connect to Google Sheets: {e}")
+        st.info("Please configure your Google Sheets credentials in .streamlit/secrets.toml")
+        st.stop()
+
+
+def get_worksheet():
+    """Get the visits worksheet, creating headers if needed."""
+    client = get_gsheet_client()
+    spreadsheet_id = st.secrets["sheets"]["spreadsheet_id"]
+    spreadsheet = client.open_by_key(spreadsheet_id)
+
+    # Get or create the first worksheet
+    worksheet = spreadsheet.sheet1
+
+    # Check if headers exist, if not add them
+    try:
+        first_row = worksheet.row_values(1)
+        if not first_row or first_row[0] != "Country":
+            worksheet.insert_row(SHEET_COLUMNS, 1)
+    except:
+        worksheet.insert_row(SHEET_COLUMNS, 1)
+
+    return worksheet
 
 
 # ---------- Data ----------
@@ -41,7 +197,6 @@ def load_geo() -> gpd.GeoDataFrame:
     if continent_col:
         gdf = gdf[gdf[continent_col].str.strip().str.lower() == "africa"]
 
-
     # Standardize name and ISO3
     name_col = next((c for c in ["NAME", "ADMIN", "name"] if c in gdf.columns), None)
     iso_col = next((c for c in ["ISO_A3", "ADM0_A3", "iso_a3"] if c in gdf.columns), None)
@@ -56,153 +211,159 @@ def load_geo() -> gpd.GeoDataFrame:
     return africa
 
 
-CSV_COLUMNS = [
-    "Country", "ISO_A3", "Restaurant",
-    *RATERS,
-    "Group_Rating",
-    "Visit Date", "Notes", "Dishes"
-]
-
-
-@st.cache_data
+@st.cache_data(ttl=30)
 def load_visits() -> pd.DataFrame:
-    """Load visits CSV; coerce schema; compute group averages; parse dates (MM/DD/YYYY)."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not DATA_PATH.exists():
-        pd.DataFrame(columns=CSV_COLUMNS).to_csv(DATA_PATH, index=False)
+    """Load visits from Google Sheets."""
+    try:
+        worksheet = get_worksheet()
+        data = worksheet.get_all_records()
 
-    df = pd.read_csv(DATA_PATH, dtype="string", keep_default_na=False)
+        if not data:
+            return pd.DataFrame(columns=SHEET_COLUMNS)
 
-    # Ensure all expected columns exist
-    for col in CSV_COLUMNS:
-        if col not in df.columns:
-            df[col] = ""
+        df = pd.DataFrame(data)
 
-    # Ratings: per-person numeric 1–10, compute Group_Rating if missing
-    for r in RATERS:
-        df[r] = pd.to_numeric(df[r], errors="coerce").clip(1, 10)
+        # Ensure all expected columns exist
+        for col in SHEET_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
 
-    # If legacy 'Rating' column existed, use it to fill Group_Rating once
-    if "Rating" in df.columns and df["Rating"].notna().any():
-        df["Group_Rating"] = pd.to_numeric(df["Rating"], errors="coerce") * 2.0  # in case legacy 1–5
-        df.drop(columns=["Rating"], inplace=True)
+        # Parse dates
+        parsed = pd.to_datetime(df["Visit Date"], format="%m/%d/%Y", errors="coerce")
+        fallback = pd.to_datetime(df["Visit Date"], errors="coerce")
+        df["Visit Date"] = parsed.fillna(fallback)
 
-    # Compute group rating = mean of available individual ratings, else use given Group_Rating
-    indiv = df[RATERS].astype(float)
-    df["Group_Rating"] = pd.to_numeric(df["Group_Rating"], errors="coerce")
-    computed = indiv.mean(axis=1, skipna=True)
-    df.loc[computed.notna(), "Group_Rating"] = computed
-    df["Group_Rating"] = df["Group_Rating"].clip(1, 10)
+        # Filter valid visits (must have restaurant name)
+        df = df[df["Restaurant"].astype(str).str.len() > 0].copy()
 
-    # Dates: parse robustly; display/save as MM/DD/YYYY
-    # Try MM/DD/YYYY first, then other
-    parsed = pd.to_datetime(df["Visit Date"], format="%m/%d/%Y", errors="coerce")
-    fallback = pd.to_datetime(df["Visit Date"], errors="coerce")
-    df["Visit Date"] = parsed.fillna(fallback)
+        # Normalize ISO
+        df["ISO_A3"] = df["ISO_A3"].astype("string").str.upper()
 
-    # Only real visits: require Restaurant + some rating info
-    has_any_rating = df[RATERS + ["Group_Rating"]].astype(float).notna().any(axis=1)
-    df = df[(df["Restaurant"].str.len() > 0) & has_any_rating].copy()
+        df.sort_values(["Visit Date", "Country", "Restaurant"], ascending=[False, True, True], inplace=True, na_position="last")
+        return df
 
-    # Normalize ISO
-    df["ISO_A3"] = df["ISO_A3"].astype("string").str.upper()
-
-    df.sort_values(["Visit Date", "Country", "Restaurant"], ascending=[False, True, True], inplace=True, na_position="last")
-    return df
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame(columns=SHEET_COLUMNS)
 
 
 def write_visit(row: Dict) -> None:
-    """Append a single visit row to the CSV, saving date as MM/DD/YYYY."""
-    out = {col: row.get(col, "") for col in CSV_COLUMNS}
-    # date formatting
-    dt = row.get("Visit Date")
-    if isinstance(dt, (pd.Timestamp, datetime)):
-        out["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
-    elif isinstance(dt, str):
-        try:
-            out["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
-        except Exception:
-            out["Visit Date"] = dt
+    """Append a single visit row to Google Sheets."""
+    out = []
+    for col in SHEET_COLUMNS:
+        val = row.get(col, "")
 
-    # per-person rating bounds
-    for r in RATERS:
-        v = pd.to_numeric(out.get(r, None), errors="coerce")
-        out[r] = "" if pd.isna(v) else float(min(max(v, 1.0), 10.0))
+        # Format date
+        if col == "Visit Date":
+            if isinstance(val, (pd.Timestamp, datetime)):
+                val = pd.to_datetime(val).strftime("%m/%d/%Y")
+            elif isinstance(val, str):
+                try:
+                    val = pd.to_datetime(val).strftime("%m/%d/%Y")
+                except:
+                    pass
 
-    # Group_Rating: mean of available individual ratings
-    vals = [pd.to_numeric(out[r], errors="coerce") for r in RATERS]
-    vals = [float(v) for v in vals if pd.notna(v)]
-    out["Group_Rating"] = "" if not vals else round(sum(vals) / len(vals), 2)
+        out.append(val if val != "" else "")
 
-    df = pd.DataFrame([out], columns=CSV_COLUMNS)
-    header = not DATA_PATH.exists() or DATA_PATH.stat().st_size == 0
-    df.to_csv(DATA_PATH, mode="a", header=header, index=False)
+    worksheet = get_worksheet()
+    worksheet.append_row(out, value_input_option="USER_ENTERED")
 
 
-def update_visit(index: int, row: Dict) -> None:
-    """Update an existing visit at the given index."""
-    df = pd.read_csv(DATA_PATH, keep_default_na=False)
-    
-    # date formatting
-    dt = row.get("Visit Date")
-    if isinstance(dt, (pd.Timestamp, datetime)):
-        row["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
-    elif isinstance(dt, str):
-        try:
-            row["Visit Date"] = pd.to_datetime(dt).strftime("%m/%d/%Y")
-        except Exception:
-            pass
-    
-    # per-person rating bounds and convert to string
-    for r in RATERS:
-        v = pd.to_numeric(row.get(r, None), errors="coerce")
-        row[r] = "" if pd.isna(v) else str(float(min(max(v, 1.0), 10.0)))
-    
-    # Group_Rating: mean of available individual ratings, convert to string
-    vals = [pd.to_numeric(row[r], errors="coerce") for r in RATERS]
-    vals = [float(v) for v in vals if pd.notna(v)]
-    row["Group_Rating"] = "" if not vals else str(round(sum(vals) / len(vals), 2))
-    
-    # Update the row - ensure all values are strings
-    for col in CSV_COLUMNS:
-        if col in row:
-            df.at[index, col] = str(row[col]) if row[col] is not None else ""
-    
-    df.to_csv(DATA_PATH, index=False)
+def update_visit(row_num: int, row: Dict) -> None:
+    """Update an existing visit at the given row number (1-indexed, header is row 1)."""
+    out = []
+    for col in SHEET_COLUMNS:
+        val = row.get(col, "")
+
+        # Format date
+        if col == "Visit Date":
+            if isinstance(val, (pd.Timestamp, datetime)):
+                val = pd.to_datetime(val).strftime("%m/%d/%Y")
+            elif isinstance(val, str):
+                try:
+                    val = pd.to_datetime(val).strftime("%m/%d/%Y")
+                except:
+                    pass
+
+        out.append(val if val != "" else "")
+
+    worksheet = get_worksheet()
+    worksheet.update(values=[out], range_name=f"A{row_num}:{chr(65 + len(SHEET_COLUMNS) - 1)}{row_num}", value_input_option="USER_ENTERED")
 
 
-def delete_visit(index: int) -> None:
-    """Delete a visit at the given index."""
-    df = pd.read_csv(DATA_PATH, keep_default_na=False)
-    df = df.drop(index)
-    df.to_csv(DATA_PATH, index=False)
+def delete_visit(row_num: int) -> None:
+    """Delete a visit at the given row number."""
+    worksheet = get_worksheet()
+    worksheet.delete_rows(row_num)
 
 
 # ---------- Map helpers ----------
 
+# Color palette
+COLORS = {
+    "visited": "#4A7C59",      # Forest green
+    "visited_border": "#3D6B4A",
+    "unvisited": "#E8DCC4",    # Warm beige
+    "unvisited_border": "#C9B896",
+    "hover": "#F4C430",        # Golden
+    "selected": "#D4A574",     # Amber
+}
+
+
 def make_map(africa: gpd.GeoDataFrame, visited_isos: set) -> folium.Map:
-    # Fit to Africa and lock viewport to Africa bounds
-    minx, miny, maxx, maxy = africa.total_bounds  # lon/lat
+    """Create the Africa map with improved styling."""
+    minx, miny, maxx, maxy = africa.total_bounds
     center = [(miny + maxy) / 2.0, (minx + maxx) / 2.0]
 
-    m = folium.Map(location=center, zoom_start=3, tiles="cartodbpositron", prefer_canvas=True, no_wrap=True)
-    
+    m = folium.Map(
+        location=center,
+        zoom_start=3,
+        tiles="cartodbvoyager",
+        prefer_canvas=True,
+        no_wrap=True
+    )
+
     def style_function(feat):
         iso = feat["properties"].get("iso_a3", "")
         if iso in visited_isos:
-            return {"fillColor": "#4CAF50", "color": "#2E7D32", "weight": 2, "fillOpacity": 0.7}
+            return {
+                "fillColor": COLORS["visited"],
+                "color": COLORS["visited_border"],
+                "weight": 2,
+                "fillOpacity": 0.75
+            }
         else:
-            return {"fillColor": "#f2f2f2", "color": "#555", "weight": 1, "fillOpacity": 0.6}
-    
+            return {
+                "fillColor": COLORS["unvisited"],
+                "color": COLORS["unvisited_border"],
+                "weight": 1,
+                "fillOpacity": 0.6
+            }
+
+    def highlight_function(feat):
+        return {
+            "weight": 3,
+            "color": COLORS["hover"],
+            "fillColor": COLORS["hover"],
+            "fillOpacity": 0.8
+        }
+
     folium.GeoJson(
         africa.to_json(),
         name="Africa",
         style_function=style_function,
-        highlight_function=lambda feat: {"weight": 2, "color": "#333", "fillColor": "#ffd24d", "fillOpacity": 0.7},
-        tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["Country"], sticky=False),
+        highlight_function=highlight_function,
+        tooltip=folium.GeoJsonTooltip(
+            fields=["name"],
+            aliases=[""],
+            style="font-size: 14px; font-weight: 500; padding: 8px 12px; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);",
+            sticky=False
+        ),
     ).add_to(m)
 
     m.fit_bounds([[miny, minx], [maxy, maxx]])
+
+    # Restrict panning to Africa
     js = f"""
     <script>
     var map = window.map_{id(m)};
@@ -219,7 +380,7 @@ def make_map(africa: gpd.GeoDataFrame, visited_isos: set) -> folium.Map:
 
 def country_at_click(africa: gpd.GeoDataFrame, lat: float, lon: float) -> Optional[dict]:
     """Return {'name':..., 'iso_a3':...} of the polygon containing the point, else None."""
-    pt = Point(lon, lat)  # shapely uses x=lon, y=lat
+    pt = Point(lon, lat)
     idx = africa.sindex.query(pt, predicate="intersects")
     if len(idx) == 0:
         return None
@@ -234,207 +395,173 @@ def country_at_click(africa: gpd.GeoDataFrame, lat: float, lon: float) -> Option
 # ---------- UI ----------
 
 def kpis(visits: pd.DataFrame):
+    """Display KPI metrics."""
     c1, c2, c3 = st.columns(3)
-    c1.metric("Countries covered", f"{visits['Country'].nunique():,}")
-    c2.metric("Avg rating", f"{visits['Group_Rating'].astype(float).mean():.2f}" if not visits.empty else "–")
+    c1.metric("Countries Explored", f"{visits['Country'].nunique():,}")
+    c2.metric("Total Visits", f"{len(visits):,}")
     last = pd.to_datetime(visits["Visit Date"], errors="coerce").max()
-    c3.metric("Latest visit", last.strftime("%m/%d/%Y") if pd.notna(last) else "–")
-
+    c3.metric("Latest Visit", last.strftime("%b %d, %Y") if pd.notna(last) else "-")
 
 
 def country_panel(visits: pd.DataFrame, selected: Optional[dict]):
+    """Display the country detail panel."""
     if selected is None:
-        st.subheader("Select a country")
-        st.info("Click a country on the map to view or add a visit.")
+        st.subheader("Select a Country")
+        st.info("Click any country on the map to view visits or add a new one.")
         return
 
     name, iso = selected["name"], selected["iso_a3"]
     st.subheader(f"{name}")
-    rows = visits[visits["ISO_A3"] == iso].copy()
+
+    # Get visits for this country
+    all_visits = load_visits()
+    rows = all_visits[all_visits["ISO_A3"] == iso].copy()
 
     if rows.empty:
-        st.info("No visits logged yet. Add one below.")
-        with st.form(key=f"visit_form_{iso}", clear_on_submit=True):
-            restaurant = st.text_input("Restaurant", placeholder="e.g., Lucy Ethiopian Restaurant")
-
-
-            st.markdown("**Per-person ratings (1–10)**")
-            per_person = {}
-            for r in RATERS:
-                per_person[r] = st.slider(r, min_value=1.0, max_value=10.0, value=8.0, step=0.1, key=f"{r}_{iso}")
-
-            # Show computed group avg live as headline
-            vals = [per_person[r] for r in RATERS if per_person[r] is not None]
-            group_avg = round(sum(vals) / len(vals), 2) if vals else None
-            if group_avg is not None:
-                st.markdown(f"### 🎯 Group Average: **{group_avg}/10**")
-            
-            visit_date = st.date_input("Visit date", format="MM/DD/YYYY")
-            dishes = st.text_input("Dishes (comma-separated)", placeholder="injera, kitfo, tibs")
-            notes = st.text_area("Notes", placeholder="Highlights, who joined, standout dishes...")
-
-            submitted = st.form_submit_button("Add visit")
-            if submitted:
-                if restaurant.strip() == "":
-                    st.error("Restaurant name is required.")
-                else:
-                    row = {
-                        "Country": name,
-                        "ISO_A3": iso,
-                        "Restaurant": restaurant.strip(),
-                        "Visit Date": pd.to_datetime(visit_date),
-                        "Notes": notes.strip(),
-                        "Dishes": dishes.strip(),
-                        "Group_Rating": group_avg,
-                    }
-
-
-                    for r in RATERS:
-                        row[r] = per_person[r]
-                    write_visit(row)
-                    st.success("Visit added.")
-                    st.cache_data.clear()
-                    st.rerun()
+        st.info("No visits logged yet.")
+        _render_add_form(name, iso, "first")
     else:
-        # Display country visits with per-person ratings and group avg
+        # Display visits table
         display = rows.assign(
             **{
-                "Visit Date": pd.to_datetime(rows["Visit Date"], errors="coerce").dt.strftime("%m/%d/%Y"),
+                "Visit Date": pd.to_datetime(rows["Visit Date"], errors="coerce").dt.strftime("%b %d, %Y"),
             }
-        )[["Restaurant", *RATERS, "Group_Rating", "Visit Date", "Dishes", "Notes"]]
+        )[["Restaurant", "Visit Date", "Dishes", "Notes"]]
 
-
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width="stretch", hide_index=True)
 
         # Country summary
         st.markdown("**Summary**")
-        s1, s2, s3 = st.columns(3)
-        s1.metric("Visits", f"{len(display):,}")
-        s2.metric("Avg rating", f"{pd.to_numeric(display['Group_Rating'], errors='coerce').mean():.2f}")
+        s1, s2 = st.columns(2)
+        s1.metric("Total Visits", f"{len(display):,}")
         latest = pd.to_datetime(rows["Visit Date"], errors="coerce").max()
-        s3.metric("Latest visit", latest.strftime("%m/%d/%Y") if pd.notna(latest) else "–")
+        s2.metric("Latest", latest.strftime("%b %d") if pd.notna(latest) else "-")
 
         # Edit existing visits
-        with st.expander("Edit or delete visits"):
-            for idx, (orig_idx, row) in enumerate(rows.iterrows()):
-                st.markdown(f"**{row['Restaurant']}** — {pd.to_datetime(row['Visit Date'], errors='coerce').strftime('%m/%d/%Y') if pd.notna(row['Visit Date']) else 'N/A'}")
-                
-                col1, col2 = st.columns([4, 1])
-                
-                with col1:
-                    with st.form(key=f"edit_form_{orig_idx}"):
-                        restaurant = st.text_input("Restaurant", value=row["Restaurant"], key=f"edit_rest_{orig_idx}")
-                        
-                        st.markdown("**Per-person ratings (1–10)**")
-                        per_person = {}
-                        for r in RATERS:
-                            curr_val = pd.to_numeric(row[r], errors="coerce")
-                            per_person[r] = st.slider(
-                                r, 
-                                min_value=1.0, 
-                                max_value=10.0, 
-                                value=float(curr_val) if pd.notna(curr_val) else 8.0, 
-                                step=0.1, 
-                                key=f"edit_{r}_{orig_idx}"
-                            )
-                        
-                        vals = [per_person[r] for r in RATERS if per_person[r] is not None]
-                        group_avg = round(sum(vals) / len(vals), 2) if vals else None
-                        if group_avg is not None:
-                            st.markdown(f"### 🎯 Group Average: **{group_avg}/10**")
-                        
-                        visit_date = st.date_input(
-                            "Visit date", 
-                            value=pd.to_datetime(row["Visit Date"], errors="coerce") if pd.notna(row["Visit Date"]) else datetime.now(),
-                            format="MM/DD/YYYY",
-                            key=f"edit_date_{orig_idx}"
-                        )
-                        dishes = st.text_input("Dishes (comma-separated)", value=row["Dishes"], key=f"edit_dish_{orig_idx}")
-                        notes = st.text_area("Notes", value=row["Notes"], key=f"edit_note_{orig_idx}")
-                        
-                        update_btn = st.form_submit_button("Update")
-                        if update_btn:
-                            if restaurant.strip() == "":
-                                st.error("Restaurant name is required.")
-                            else:
-                                updated_row = {
-                                    "Country": name,
-                                    "ISO_A3": iso,
-                                    "Restaurant": restaurant.strip(),
-                                    "Visit Date": pd.to_datetime(visit_date),
-                                    "Notes": notes.strip(),
-                                    "Dishes": dishes.strip(),
-                                    "Group_Rating": group_avg,
-                                }
-                                for r in RATERS:
-                                    updated_row[r] = per_person[r]
-                                update_visit(orig_idx, updated_row)
-                                st.success("Visit updated.")
-                                st.cache_data.clear()
-                                st.rerun()
-                
-                with col2:
-                    st.write("")
-                    st.write("")
-                    if st.button("🗑️ Delete", key=f"delete_{orig_idx}", type="secondary"):
-                        delete_visit(orig_idx)
-                        st.success("Visit deleted.")
-                        st.cache_data.clear()
-                        st.rerun()
-                
-                if idx < len(rows) - 1:
-                    st.divider()
-
-        with st.expander("Add another visit"):
-            with st.form(key=f"visit_form_more_{iso}", clear_on_submit=True):
-                restaurant = st.text_input("Restaurant", key=f"rest_{iso}")
+        with st.expander("Edit or delete visit"):
+            _render_edit_forms(name, iso, rows)
 
 
-                st.markdown("**Per-person ratings (1–10)**")
-                per_person = {}
-                for r in RATERS:
-                    per_person[r] = st.slider(r, min_value=1.0, max_value=10.0, value=8.0, step=0.1, key=f"{r}_more_{iso}")
+def _render_add_form(name: str, iso: str, suffix: str):
+    """Render the form to add a new visit."""
+    with st.form(key=f"visit_form_{suffix}_{iso}", clear_on_submit=True):
+        restaurant = st.text_input("Restaurant name", placeholder="e.g., Lucy Ethiopian Kitchen")
 
-                vals = [per_person[r] for r in RATERS if per_person[r] is not None]
-                group_avg = round(sum(vals) / len(vals), 2) if vals else None
-                if group_avg is not None:
-                    st.markdown(f"### 🎯 Group Average: **{group_avg}/10**")
+        col1, col2 = st.columns(2)
+        with col1:
+            visit_date = st.date_input("Visit date", format="MM/DD/YYYY", key=f"date_{suffix}_{iso}")
+        with col2:
+            dishes = st.text_input("Dishes (comma-separated)", placeholder="injera, kitfo", key=f"dish_{suffix}_{iso}")
 
-                visit_date = st.date_input("Visit date", format="MM/DD/YYYY", key=f"date_{iso}")
-                dishes = st.text_input("Dishes (comma-separated)", key=f"dish_{iso}")
-                notes = st.text_area("Notes", key=f"note_{iso}")
+        notes = st.text_area("Notes", placeholder="Highlights, atmosphere, recommendations...", key=f"note_{suffix}_{iso}")
 
-                submitted = st.form_submit_button("Add visit")
-                if submitted:
+        submitted = st.form_submit_button("Add Visit", type="primary")
+        if submitted:
+            if restaurant.strip() == "":
+                st.error("Please enter a restaurant name.")
+            else:
+                row = {
+                    "Country": name,
+                    "ISO_A3": iso,
+                    "Restaurant": restaurant.strip(),
+                    "Visit Date": pd.to_datetime(visit_date),
+                    "Dishes": dishes.strip(),
+                    "Notes": notes.strip(),
+                }
+                write_visit(row)
+                st.success("Visit added!")
+                st.cache_data.clear()
+                st.rerun()
+
+
+def _render_edit_forms(name: str, iso: str, rows: pd.DataFrame):
+    """Render edit forms for existing visits."""
+    # Need to find the actual row numbers in the sheet
+    worksheet = get_worksheet()
+    all_data = worksheet.get_all_values()
+
+    for idx, (_, row) in enumerate(rows.iterrows()):
+        restaurant_name = row["Restaurant"]
+        visit_date_str = pd.to_datetime(row["Visit Date"], errors="coerce")
+        visit_date_display = visit_date_str.strftime('%b %d, %Y') if pd.notna(visit_date_str) else 'N/A'
+
+        st.markdown(f"**{restaurant_name}** - {visit_date_display}")
+
+        # Find this row in the sheet (match on Restaurant + ISO)
+        sheet_row_num = None
+        for i, sheet_row in enumerate(all_data[1:], start=2):  # Skip header, 1-indexed
+            if len(sheet_row) >= 3:
+                if sheet_row[0] == row["Country"] and sheet_row[1] == iso and sheet_row[2] == restaurant_name:
+                    sheet_row_num = i
+                    break
+
+        if sheet_row_num is None:
+            st.warning("Could not locate this visit in the sheet.")
+            continue
+
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            with st.form(key=f"edit_form_{sheet_row_num}"):
+                restaurant = st.text_input("Restaurant", value=row["Restaurant"], key=f"edit_rest_{sheet_row_num}")
+
+                edit_col1, edit_col2 = st.columns(2)
+                with edit_col1:
+                    edit_date = st.date_input(
+                        "Visit date",
+                        value=pd.to_datetime(row["Visit Date"], errors="coerce") if pd.notna(row["Visit Date"]) else datetime.now(),
+                        format="MM/DD/YYYY",
+                        key=f"edit_date_{sheet_row_num}"
+                    )
+                with edit_col2:
+                    edit_dishes = st.text_input("Dishes", value=row["Dishes"], key=f"edit_dish_{sheet_row_num}")
+
+                edit_notes = st.text_area("Notes", value=row["Notes"], key=f"edit_note_{sheet_row_num}")
+
+                update_btn = st.form_submit_button("Update")
+                if update_btn:
                     if restaurant.strip() == "":
                         st.error("Restaurant name is required.")
                     else:
-                        row = {
+                        updated_row = {
                             "Country": name,
                             "ISO_A3": iso,
                             "Restaurant": restaurant.strip(),
-                            "Visit Date": pd.to_datetime(visit_date),
-                            "Notes": notes.strip(),
-                            "Dishes": dishes.strip(),
-                            "Group_Rating": group_avg,
+                            "Visit Date": pd.to_datetime(edit_date),
+                            "Dishes": edit_dishes.strip(),
+                            "Notes": edit_notes.strip(),
                         }
-                        for r in RATERS:
-                            row[r] = per_person[r]
-                        write_visit(row)
-                        st.success("Visit added.")
+                        update_visit(sheet_row_num, updated_row)
+                        st.success("Visit updated!")
                         st.cache_data.clear()
                         st.rerun()
+
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("Delete", key=f"delete_{sheet_row_num}", type="secondary"):
+                delete_visit(sheet_row_num)
+                st.success("Visit deleted!")
+                st.cache_data.clear()
+                st.rerun()
+
+        if idx < len(rows) - 1:
+            st.divider()
 
 
 # ---------- App ----------
 
 def main():
+    inject_css()
+
     st.title(APP_TITLE)
-    st.caption("Click a country (Africa only) to view logged visits or add a new one. Dates use MM/DD/YYYY; ratings are per-person (1–10) with group average auto-computed.")
+    st.caption("Tracking our group's African culinary adventures. Click a country to view visits or add new ones.")
 
     africa = load_geo()
     visits = load_visits()
+
     kpis(visits)
+    st.markdown("")  # Spacing
 
     col_map, col_panel = st.columns([3, 2], gap="large")
 
@@ -442,6 +569,7 @@ def main():
         visited_isos = set(visits["ISO_A3"].unique())
         m = make_map(africa, visited_isos)
         map_state = st_folium(m, width=None, height=650)
+
         if map_state and map_state.get("last_object_clicked"):
             lat = map_state["last_object_clicked"]["lat"]
             lon = map_state["last_object_clicked"]["lng"]
@@ -454,12 +582,25 @@ def main():
         country_panel(visits, selected)
 
     st.markdown("---")
-    st.download_button(
-        "Download all visits (CSV)",
-        data=visits.to_csv(index=False),
-        file_name="africax_restaurants.csv",
-        mime="text/csv",
-    )
+
+    col_dl, col_legend = st.columns([1, 2])
+    with col_dl:
+        st.download_button(
+            "Download All Visits (CSV)",
+            data=visits.to_csv(index=False),
+            file_name="africax_visits.csv",
+            mime="text/csv",
+        )
+    with col_legend:
+        st.markdown(
+            f"""
+            <div style="display: flex; gap: 20px; align-items: center; font-size: 0.9rem;">
+                <span><span style="display: inline-block; width: 16px; height: 16px; background: {COLORS['visited']}; border-radius: 4px; vertical-align: middle;"></span> Visited</span>
+                <span><span style="display: inline-block; width: 16px; height: 16px; background: {COLORS['unvisited']}; border-radius: 4px; vertical-align: middle;"></span> Not yet visited</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
 
 if __name__ == "__main__":
