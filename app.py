@@ -175,7 +175,7 @@ def get_worksheet():
         first_row = worksheet.row_values(1)
         if not first_row or first_row[0] != "Country":
             worksheet.insert_row(SHEET_COLUMNS, 1)
-    except:
+    except Exception:
         worksheet.insert_row(SHEET_COLUMNS, 1)
 
     return worksheet
@@ -260,7 +260,7 @@ def write_visit(row: Dict) -> None:
             elif isinstance(val, str):
                 try:
                     val = pd.to_datetime(val).strftime("%m/%d/%Y")
-                except:
+                except Exception:
                     pass
 
         out.append(val if val != "" else "")
@@ -282,7 +282,7 @@ def update_visit(row_num: int, row: Dict) -> None:
             elif isinstance(val, str):
                 try:
                     val = pd.to_datetime(val).strftime("%m/%d/%Y")
-                except:
+                except Exception:
                     pass
 
         out.append(val if val != "" else "")
