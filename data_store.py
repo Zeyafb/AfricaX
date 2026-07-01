@@ -1,30 +1,32 @@
-"""AfricaX data layer — local CSV backend.
+"""AfricaX data layer — local CSV backend (ranking model).
 
-Single source of truth: ``data/restaurants.csv``. This module owns the schema,
-the group-rating math, and all reads/writes so the UI never touches the file
-directly. Backed out of Google Sheets (June 2026) — see README.
+Single source of truth: ``data/restaurants.csv``. This module owns the schema
+and all reads/writes; it stores each member's **rank** of a restaurant. Consensus
+scoring (percentile + median → overall rank) lives in ``rankings.py``, ported
+from the Movie Ranks project.
 
 Schema (canonical column order)::
 
     Country, ISO_A3, Restaurant,
-    Fayez, Muhammad, Seth, Ian, Shubham,   # per-person ratings, 1-10, blank = absent
-    Group_Rating,                          # mean of present ratings (derived)
+    Fayez, Muhammad, Seth, Ian, Shubham,   # each member's RANK (1 = favorite), blank = not ranked
     Visit Date, Notes, Dishes,
     Status,                                # "visited" | "wishlist"
     Maps_URL                               # optional Google Maps link
+
+Rankings apply to visited restaurants. Wishlist rows carry no ranks.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import List, Optional
 
 import pandas as pd
 
 DATA_DIR = Path(__file__).parent / "data"
 CSV_PATH = DATA_DIR / "restaurants.csv"
 
-# The group of friends who rate. Order here is the CSV column order.
+# The group of friends who rank. Order here is the CSV column order.
 RATERS = ["Fayez", "Muhammad", "Seth", "Ian", "Shubham"]
 
 STATUS_VISITED = "visited"
@@ -32,39 +34,8 @@ STATUS_WISHLIST = "wishlist"
 STATUSES = (STATUS_VISITED, STATUS_WISHLIST)
 
 _BASE = ["Country", "ISO_A3", "Restaurant"]
-_TAIL = ["Group_Rating", "Visit Date", "Notes", "Dishes", "Status", "Maps_URL"]
+_TAIL = ["Visit Date", "Notes", "Dishes", "Status", "Maps_URL"]
 COLUMNS = _BASE + RATERS + _TAIL
-
-_NUMERIC = RATERS + ["Group_Rating"]
-
-
-# ---------- group rating ----------
-
-def group_rating(ratings: Iterable) -> Optional[float]:
-    """Mean of the ratings that are actually present (non-blank, non-NaN).
-
-    Returns ``None`` when nobody rated (e.g. a wishlist entry).
-    """
-    vals = []
-    for v in ratings:
-        if v is None:
-            continue
-        if isinstance(v, float) and pd.isna(v):
-            continue
-        s = str(v).strip()
-        if s == "":
-            continue
-        try:
-            vals.append(float(s))
-        except ValueError:
-            continue
-    if not vals:
-        return None
-    return round(sum(vals) / len(vals), 2)
-
-
-def _recompute_group(df: pd.DataFrame) -> pd.Series:
-    return df.apply(lambda r: group_rating([r[x] for x in RATERS]), axis=1)
 
 
 # ---------- load / save ----------
@@ -80,24 +51,21 @@ def load() -> pd.DataFrame:
 
     df = pd.read_csv(CSV_PATH, dtype=str).fillna("")
 
-    # Migrate: add any missing columns (older files had no Status / Maps_URL).
+    # Migrate: add missing columns; drop the retired Group_Rating (mean model).
     for c in COLUMNS:
         if c not in df.columns:
             df[c] = ""
+    if "Group_Rating" in df.columns:
+        df = df.drop(columns=["Group_Rating"])
 
-    # Normalise status; anything unknown/blank is treated as a visited record.
     df["Status"] = df["Status"].astype(str).str.strip().str.lower()
     df.loc[~df["Status"].isin(STATUSES), "Status"] = STATUS_VISITED
-
     df["ISO_A3"] = df["ISO_A3"].astype(str).str.upper().str.strip()
 
-    for c in _NUMERIC:
+    # Per-member ranks are integers.
+    for c in RATERS:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Group rating is always derived, never trusted from disk.
-    df["Group_Rating"] = _recompute_group(df)
-
-    # Dates: prefer MM/DD/YYYY, fall back to anything parseable.
     strict = pd.to_datetime(df["Visit Date"], format="%m/%d/%Y", errors="coerce")
     loose = pd.to_datetime(df["Visit Date"], errors="coerce")
     df["Visit Date"] = strict.fillna(loose)
@@ -116,12 +84,12 @@ def save(df: pd.DataFrame) -> None:
     out["Status"] = out["Status"].astype(str).str.strip().str.lower()
     out.loc[~out["Status"].isin(STATUSES), "Status"] = STATUS_VISITED
     out["ISO_A3"] = out["ISO_A3"].astype(str).str.upper().str.strip()
-
-    out["Group_Rating"] = _recompute_group(out)
     out["Visit Date"] = pd.to_datetime(out["Visit Date"], errors="coerce").dt.strftime("%m/%d/%Y")
 
-    for c in _NUMERIC:
-        out[c] = out[c].apply(lambda v: "" if pd.isna(v) else f"{float(v):g}")
+    for c in RATERS:
+        out[c] = pd.to_numeric(out[c], errors="coerce").apply(
+            lambda v: "" if pd.isna(v) else str(int(round(v)))
+        )
 
     out = out[COLUMNS].fillna("")
 
@@ -154,16 +122,12 @@ def status_by_iso(df: pd.DataFrame) -> dict:
 
 
 def country_stats(df: pd.DataFrame) -> dict:
-    """Per-ISO summary used for map tooltips."""
+    """Per-ISO counts used for map tooltips."""
     stats: dict = {}
     for iso, g in df.groupby("ISO_A3"):
-        vis = g[g["Status"] == STATUS_VISITED]
-        wish = g[g["Status"] == STATUS_WISHLIST]
-        avg = vis["Group_Rating"].dropna().mean()
         stats[iso] = {
-            "visited": int(len(vis)),
-            "wishlist": int(len(wish)),
-            "avg": round(float(avg), 1) if pd.notna(avg) else None,
+            "visited": int((g["Status"] == STATUS_VISITED).sum()),
+            "wishlist": int((g["Status"] == STATUS_WISHLIST).sum()),
         }
     return stats
 
@@ -187,6 +151,20 @@ def update_row(index: int, row: dict) -> None:
 def delete_row(index: int) -> None:
     df = load()
     df = df.drop(index=index).reset_index(drop=True)
+    save(df)
+
+
+def set_ranking(member: str, ordered_restaurants: List[str]) -> None:
+    """Rewrite a member's whole ranking column from an ordered list (#1 first).
+
+    Restaurants are matched by name; anything not in the list is left unranked
+    (blank) for that member. Ranks are renumbered 1..N so the input is always clean.
+    """
+    if member not in RATERS:
+        raise ValueError(f"Unknown member: {member}")
+    df = load()
+    rank_map = {name: i + 1 for i, name in enumerate(ordered_restaurants)}
+    df[member] = df["Restaurant"].map(rank_map)
     save(df)
 
 

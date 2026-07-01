@@ -1,14 +1,19 @@
 """AfricaX map layer — Folium choropleth of Africa with 3 visit states.
 
+Visual target (see the app mockup): a clean map with a light-blue ocean, light-grey
+"not visited" countries, solid green "visited", and solid purple "wishlist", with a
+permanent name label on every lit country.
+
 Accessibility notes:
-- The three states differ in **lightness + hue + border style** (wishlist uses a
-  dashed border), so they are distinguishable without relying on colour alone.
+- The three states differ in **lightness + hue** and every lit country is also
+  labelled in text, so states never rely on colour alone.
 - Every state is also reachable without the map (sidebar country picker + tables
   in ``ui.py``), and hover tooltips carry the same info as text.
 """
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -21,13 +26,16 @@ from data_store import STATUS_VISITED, STATUS_WISHLIST
 
 _SHP = Path(__file__).parent / "data" / "ne_110m_admin_0_countries.shp"
 
-# Colour-vision-safe-ish palette: differ in lightness AND hue, wishlist dashed.
+OCEAN = "#DCEFF9"
+
+# States differ in lightness AND hue. Green = visited, purple = wishlist,
+# light grey = not visited (matches the product mockup).
 STATE_STYLE = {
-    STATUS_VISITED: {"fill": "#2E7D5B", "border": "#12513A", "dash": None, "weight": 2.0, "opacity": 0.82},
-    STATUS_WISHLIST: {"fill": "#2F80C7", "border": "#17456F", "dash": "6,4", "weight": 2.6, "opacity": 0.80},
-    "unvisited": {"fill": "#ECE6D9", "border": "#C4B393", "dash": None, "weight": 0.8, "opacity": 0.55},
+    STATUS_VISITED:  {"fill": "#2E7D5B", "border": "#1C5C41", "weight": 1.2, "opacity": 0.92, "label": "#FFFFFF"},
+    STATUS_WISHLIST: {"fill": "#8B5FBF", "border": "#5E3B87", "weight": 1.2, "opacity": 0.90, "label": "#FFFFFF"},
+    "unvisited":     {"fill": "#E6E6E6", "border": "#CFCFCF", "weight": 0.7, "opacity": 0.95, "label": "#6B6B6B"},
 }
-HOVER = {"weight": 3.2, "color": "#1A1A1A", "fillOpacity": 0.9}
+HOVER = {"weight": 2.6, "color": "#1A1A1A", "fillOpacity": 1.0}
 
 
 @st.cache_data(show_spinner=False)
@@ -61,9 +69,8 @@ def load_geo() -> gpd.GeoDataFrame:
 
 def _tooltip(status: Optional[str], stat: Optional[dict]) -> str:
     if status == STATUS_VISITED and stat:
-        avg = f" · avg {stat['avg']}/10" if stat.get("avg") is not None else ""
         n = stat.get("visited", 0)
-        return f"Visited · {n} place{'s' if n != 1 else ''}{avg}"
+        return f"Visited · {n} place{'s' if n != 1 else ''}"
     if status == STATUS_WISHLIST and stat:
         n = stat.get("wishlist", 0)
         return f"On the wishlist · {n} spot{'s' if n != 1 else ''}"
@@ -87,22 +94,24 @@ def build_map(
     m = folium.Map(
         location=[(miny + maxy) / 2, (minx + maxx) / 2],
         zoom_start=3,
-        tiles="cartodbvoyager",
+        tiles=None,
         prefer_canvas=True,
         no_wrap=True,
+        zoom_control=True,
+    )
+    # Light-blue ocean: style the leaflet container *inside* folium's own iframe.
+    m.get_root().header.add_child(
+        folium.Element(f"<style>.leaflet-container{{background:{OCEAN} !important;}}</style>")
     )
 
     def style_function(feat):
         s = STATE_STYLE[feat["properties"]["state"]]
-        style = {
+        return {
             "fillColor": s["fill"],
             "color": s["border"],
             "weight": s["weight"],
             "fillOpacity": s["opacity"],
         }
-        if s["dash"]:
-            style["dashArray"] = s["dash"]
-        return style
 
     folium.GeoJson(
         feats.to_json(),
@@ -120,8 +129,31 @@ def build_map(
         ),
     ).add_to(m)
 
+    _add_labels(m, feats)
     m.fit_bounds([[miny, minx], [maxy, maxx]])
     return m
+
+
+def _add_labels(m: folium.Map, feats: gpd.GeoDataFrame) -> None:
+    """Permanent name labels on every lit (visited/wishlist) country."""
+    lit = feats[feats["state"] != "unvisited"]
+    if lit.empty:
+        return
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # representative_point on geographic CRS
+        for _, r in lit.iterrows():
+            pt = r.geometry.representative_point()
+            colour = STATE_STYLE[r["state"]]["label"]
+            html = (
+                f"<div style=\"font-size:11px;font-weight:700;color:{colour};"
+                "text-shadow:0 1px 2px rgba(0,0,0,.45);white-space:nowrap;"
+                "transform:translate(-50%,-50%);text-align:center;\">"
+                f"{r['name']}</div>"
+            )
+            folium.map.Marker(
+                [pt.y, pt.x],
+                icon=folium.DivIcon(html=html, icon_size=(0, 0), icon_anchor=(0, 0)),
+            ).add_to(m)
 
 
 def country_at_click(africa: gpd.GeoDataFrame, lat: float, lon: float) -> Optional[dict]:
@@ -141,19 +173,18 @@ def country_at_click(africa: gpd.GeoDataFrame, lat: float, lon: float) -> Option
 def legend_html() -> str:
     v, w, u = STATE_STYLE[STATUS_VISITED], STATE_STYLE[STATUS_WISHLIST], STATE_STYLE["unvisited"]
 
-    def swatch(style, dashed=False):
-        border = f"2px {'dashed' if dashed else 'solid'} {style['border']}"
+    def swatch(style):
         return (
-            f"<span style='display:inline-block;width:16px;height:16px;"
-            f"background:{style['fill']};border:{border};border-radius:4px;"
+            f"<span style='display:inline-block;width:14px;height:14px;"
+            f"background:{style['fill']};border:1px solid {style['border']};border-radius:4px;"
             f"vertical-align:middle;margin-right:6px;'></span>"
         )
 
     return (
-        "<div role='group' aria-label='Map legend' style='display:flex;gap:22px;"
-        "align-items:center;font-size:.9rem;flex-wrap:wrap;'>"
+        "<div role='group' aria-label='Map legend' style='display:flex;gap:20px;"
+        "align-items:center;font-size:.85rem;flex-wrap:wrap;color:#3a3a3a;'>"
         f"<span>{swatch(v)}Visited</span>"
-        f"<span>{swatch(w, dashed=True)}Want to go (dashed)</span>"
-        f"<span>{swatch(u)}Not visited yet</span>"
+        f"<span>{swatch(w)}Wishlist</span>"
+        f"<span>{swatch(u)}Not Visited</span>"
         "</div>"
     )
