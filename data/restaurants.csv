@@ -1,4 +1,7 @@
-Country,ISO_A3,Restaurant,Fayez,Muhammad,Seth,Ian,Shubham,Group_Rating,Visit Date,Notes,Dishes
-Morocco,MAR,Fettoosh,8.0,8.0,8.0,8.0,8.0,8.0,10/08/2025,,
-Egypt,EGY,King Of Koshary,8.0,8.0,8.0,8.0,8.0,8.0,10/08/2025,,
-Senegal,SEN,Chez Dior,8.0,8.0,8.0,8.0,8.0,8.0,10/08/2025,,
+Country,ISO_A3,Restaurant,Fayez,Muhammad,Seth,Ian,Shubham,Group_Rating,Visit Date,Notes,Dishes,Status,Maps_URL
+Morocco,MAR,Fettoosh,8,8,8,8,8,8,10/08/2025,,,visited,
+Egypt,EGY,King Of Koshary,8,8,8,8,8,8,10/08/2025,,,visited,
+Senegal,SEN,Chez Dior,8,8,8,8,8,8,10/08/2025,,,visited,
+Sierra Leone,SLE,Sweet Sweet Kitchen,,,,,,,,,,wishlist,https://maps.app.goo.gl/LDGYmwg26WsrBhnH6
+Ghana,GHA,Calabash African Cuisine & Bar,,,,,,,,,,visited,
+Somalia,SOM,Kulan Cafe,,,,,,,,,,visited,
