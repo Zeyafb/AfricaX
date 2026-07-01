@@ -353,7 +353,7 @@ def _overview(vis: pd.DataFrame, wish: pd.DataFrame, idx: dict) -> None:
     if not wish.empty:
         st.markdown("<div class='ax-label' style='margin-top:12px'>Want to go</div>", unsafe_allow_html=True)
         for _, r in wish.iterrows():
-            _wishlist_card(r)
+            _wishlist_summary(r)
 
     if vis.empty and wish.empty:
         st.caption("No visits or wishlist spots logged here yet.")
@@ -411,6 +411,19 @@ def _wishlist_card(r: pd.Series) -> None:
             st.markdown(f"[📍 Open in Google Maps]({r['Maps_URL']})")
         with st.expander("✅ Mark as visited / edit"):
             _mark_visited_form(r)
+
+
+def _wishlist_summary(r: pd.Series) -> None:
+    """Read-only wishlist card for the Overview tab. The interactive 'Mark as
+    visited' form lives only in the Spots tab, so form keys never collide across
+    the two tabs (both tabs execute on every Streamlit run)."""
+    with st.container(border=True):
+        st.markdown(f"**{r['Restaurant']}** {status_pill(ds.STATUS_WISHLIST)}", unsafe_allow_html=True)
+        if str(r.get("Notes", "")).strip():
+            st.caption(r["Notes"])
+        if str(r.get("Maps_URL", "")).strip():
+            st.markdown(f"[📍 Open in Google Maps]({r['Maps_URL']})")
+        st.caption("→ Use the **Spots** tab to mark visited or edit.")
 
 
 # ---------- forms (no rating sliders — ranks are set on the My Rankings page) ----------
