@@ -136,7 +136,7 @@ def inject_css() -> None:
         .stApp { background: #FBF8F1; }
 
         .ax-card { background:#fff; border:1px solid #ECE4D4; border-radius:16px; padding:20px 22px;
-                   box-shadow:0 1px 2px rgba(60,50,30,.04); }
+                   box-shadow:0 1px 2px rgba(60,50,30,.04); display:flex; flex-direction:column; height:100%; }
         .ax-lab { font-size:11px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:#9A968C; }
         .ax-num { font-size:34px; font-weight:900; line-height:1; }
         .ax-bar { height:6px; background:#EFE9DB; border-radius:99px; overflow:hidden; }
@@ -148,6 +148,11 @@ def inject_css() -> None:
         .stButton>button[kind="primary"], .stFormSubmitButton>button[kind="primary"] {
             background:#2E7D5B; border-color:#2E7D5B; box-shadow:0 6px 16px rgba(46,125,91,.22); }
         div[data-testid="stVerticalBlockBorderWrapper"] { border-radius:16px; border-color:#ECE4D4; background:#fff; }
+        /* equalise card heights within a row so sections align */
+        div[data-testid="stHorizontalBlock"] { align-items: stretch; }
+        div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] { height:100%; }
+        div[data-testid="stColumn"] div[data-testid="stVerticalBlockBorderWrapper"] { height:100%; }
+        div[data-testid="stColumn"] div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"] { height:100%; }
         /* make dropdowns + inputs clearly read as fields on the cream page */
         div[data-baseweb="select"] > div { background:#fff !important; border:1.5px solid #CBBFA1 !important;
             border-radius:10px !important; box-shadow:0 1px 2px rgba(60,50,30,.05); }
@@ -204,42 +209,31 @@ def kpi_strip(df: pd.DataFrame, africa) -> None:
     vc = vis["ISO_A3"].nunique()
     rows = _consensus_rows(df)
     top = rows[0] if rows else None
-    c = st.columns(4)
-
     frac = round(100 * vc / total, 1) if total else 0
-    c[0].markdown(
-        f"<div class='ax-card'><div style='display:flex;justify-content:space-between'>"
-        f"<span class='ax-lab'>Countries</span></div>"
-        f"<div style='display:flex;align-items:baseline;gap:6px;margin-top:12px'><span class='ax-num'>{vc}</span>"
-        f"<span style='font-size:15px;font-weight:600;color:#B4AE9E'>of {total}</span></div>"
-        f"<div class='ax-bar' style='margin-top:12px'><div style='width:{frac}%'></div></div></div>",
-        unsafe_allow_html=True)
-
     codes = "".join(f"<span style='font-size:10px;font-weight:800;color:#2E5A44;background:#E9F1EC;"
                     f"border:1px solid #D3E5DA;border-radius:5px;padding:2px 5px;margin-right:5px'>{code(i)}</span>"
                     for i in vis["ISO_A3"].unique())
-    c[1].markdown(
-        f"<div class='ax-card'><span class='ax-lab'>Places visited</span>"
-        f"<div class='ax-num' style='margin-top:12px'>{len(vis)}</div>"
-        f"<div style='margin-top:11px'>{codes}</div></div>", unsafe_allow_html=True)
-
-    c[2].markdown(
-        f"<div class='ax-card'><span class='ax-lab'>On wishlist</span>"
-        f"<div style='display:flex;align-items:baseline;gap:6px;margin-top:12px'><span class='ax-num'>{len(wish)}</span>"
-        f"<span style='font-size:14px;font-weight:600;color:#B4AE9E'>DMV spots</span></div>"
-        f"<div style='margin-top:11px;font-size:12.5px;color:#8A8577'>Across {wish['ISO_A3'].nunique()} countries · VA · DC · MD</div></div>",
-        unsafe_allow_html=True)
-
     ts = score100(top["median"]) if top else "—"
     tn = f"{top['restaurant']} · {top['country']}" if top else "No rankings yet"
-    c[3].markdown(
-        f"<div class='ax-card' style='background:linear-gradient(150deg,#FBF3DF,#F6ECCF);border-color:#EBD9A9'>"
-        f"<span class='ax-lab' style='color:#9C7C33'>Top consensus</span>"
-        f"<div style='display:flex;align-items:baseline;gap:5px;margin-top:12px'>"
-        f"<span class='ax-num' style='color:#8A6A1E'>{ts}</span>"
-        f"<span style='font-size:14px;font-weight:700;color:#B79A54'>/100</span></div>"
-        f"<div style='margin-top:11px;font-size:13px;font-weight:700;color:#7A5E1B'>{tn}</div></div>",
-        unsafe_allow_html=True)
+    c1 = (f"<div class='ax-card'><span class='ax-lab'>Countries</span>"
+          f"<div style='display:flex;align-items:baseline;gap:6px;margin-top:12px'><span class='ax-num'>{vc}</span>"
+          f"<span style='font-size:15px;font-weight:600;color:#B4AE9E'>of {total}</span></div>"
+          f"<div class='ax-bar' style='margin-top:auto;margin-top:14px'><div style='width:{frac}%'></div></div></div>")
+    c2 = (f"<div class='ax-card'><span class='ax-lab'>Places visited</span>"
+          f"<div class='ax-num' style='margin-top:12px'>{len(vis)}</div>"
+          f"<div style='margin-top:auto;padding-top:11px'>{codes}</div></div>")
+    c3 = (f"<div class='ax-card'><span class='ax-lab'>On wishlist</span>"
+          f"<div style='display:flex;align-items:baseline;gap:6px;margin-top:12px'><span class='ax-num'>{len(wish)}</span>"
+          f"<span style='font-size:14px;font-weight:600;color:#B4AE9E'>DMV spots</span></div>"
+          f"<div style='margin-top:auto;padding-top:11px;font-size:12.5px;color:#8A8577'>Across {wish['ISO_A3'].nunique()} countries · VA · DC · MD</div></div>")
+    c4 = (f"<div class='ax-card' style='background:linear-gradient(150deg,#FBF3DF,#F6ECCF);border-color:#EBD9A9'>"
+          f"<span class='ax-lab' style='color:#9C7C33'>Top consensus</span>"
+          f"<div style='display:flex;align-items:baseline;gap:5px;margin-top:12px'>"
+          f"<span class='ax-num' style='color:#8A6A1E'>{ts}</span>"
+          f"<span style='font-size:14px;font-weight:700;color:#B79A54'>/100</span></div>"
+          f"<div style='margin-top:auto;padding-top:11px;font-size:13px;font-weight:700;color:#7A5E1B'>{tn}</div></div>")
+    st.markdown("<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:16px;align-items:stretch'>"
+                + c1 + c2 + c3 + c4 + "</div>", unsafe_allow_html=True)
 
 
 # ---------- rank nudge ----------
@@ -274,7 +268,7 @@ def hero(africa, df: pd.DataFrame) -> None:
                         + legend_html(), unsafe_allow_html=True)
             m = build_map(africa, ds.status_by_iso(df), ds.country_stats(df))
             from streamlit_folium import st_folium
-            st_folium(m, width=None, height=430, key="dash_map")
+            st_folium(m, width=None, height=400, key="dash_map")
     with right:
         _leaderboard_card(df)
 
@@ -307,14 +301,15 @@ def _leaderboard_card(df: pd.DataFrame) -> None:
                 f"<div style='margin-top:10px;height:6px;background:rgba(255,255,255,.1);border-radius:99px;overflow:hidden'>"
                 f"<div style='width:{r['median']}%;height:100%;background:#E6BE6A;border-radius:99px'></div></div></div>")
     st.markdown(
-        "<div style='background:#26332B;border-radius:18px;padding:22px 22px 18px;box-shadow:0 12px 30px rgba(30,44,32,.24)'>"
+        "<div style='background:#26332B;border-radius:18px;padding:22px 22px 18px;box-shadow:0 12px 30px "
+        "rgba(30,44,32,.24);min-height:452px;display:flex;flex-direction:column'>"
         "<div style='display:flex;align-items:center;justify-content:space-between'>"
         "<div><div class='ax-lab' style='color:#8FB6A2'>The centrepiece</div>"
         "<div style='font-size:20px;font-weight:800;color:#fff;margin-top:2px'>Group leaderboard</div></div>"
         "<div style='width:38px;height:38px;border-radius:11px;background:rgba(192,144,47,.18);display:flex;"
         "align-items:center;justify-content:center;font-size:19px'>🏆</div></div>"
         f"<div style='font-size:12.5px;color:#9DB3A7;margin-top:6px'>Median of everyone's normalised order · {ranked} of 5 ranked</div>"
-        f"<div style='margin-top:16px'>{body}</div></div>", unsafe_allow_html=True)
+        f"<div style='margin-top:16px;flex:1'>{body}</div></div>", unsafe_allow_html=True)
     st.button("View full leaderboard →", use_container_width=True, on_click=_set_view, args=("leaderboard",), key="lb_full")
 
 
