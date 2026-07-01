@@ -135,8 +135,12 @@ def build_map(
 
 
 def _add_labels(m: folium.Map, feats: gpd.GeoDataFrame) -> None:
-    """Permanent name labels on every lit (visited/wishlist) country."""
-    lit = feats[feats["state"] != "unvisited"]
+    """Permanent name labels on VISITED countries only.
+
+    Wishlist/not-visited names come from the hover tooltip instead — labelling
+    every lit country makes the small, clustered West-African ones overlap.
+    """
+    lit = feats[feats["state"] == STATUS_VISITED]
     if lit.empty:
         return
     with warnings.catch_warnings():
