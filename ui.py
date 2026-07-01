@@ -51,6 +51,11 @@ def code(iso3: str) -> str:
     return _A3_A2.get(str(iso3).upper(), str(iso3)[:2].upper())
 
 
+def flag(iso3: str) -> str:
+    a2 = _A3_A2.get(str(iso3).upper())
+    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in a2) if a2 else "🌍"
+
+
 def goto(page: str) -> None:
     """Callback for CTA buttons — switch the active page (nav radio key='page')."""
     st.session_state["page"] = page
@@ -501,25 +506,25 @@ def my_rankings_page(df: pd.DataFrame) -> None:
         st.info("No visited spots to rank yet. Add some on **Add Spot** first.")
         return
 
-    left, right = st.columns([0.58, 0.42], gap="large")
+    member = st.selectbox("Who are you?", ds.RATERS, key="rank_member")
+    st.markdown(f"{avatar(member)} &nbsp; Ranking as **{member}**", unsafe_allow_html=True)
+
+    key = f"order_{member}"
+    if key not in st.session_state:
+        saved = df[pd.to_numeric(df[member], errors="coerce").notna()].sort_values(member)["Restaurant"].tolist()
+        st.session_state[key] = saved + [n for n in names if n not in saved]
+    order = [n for n in st.session_state[key] if n in names]
+    order += [n for n in names if n not in order]
+    st.session_state[key] = order
+
+    if not _country_ranked(df, member):
+        st.markdown(f"<div class='ax-card' style='background:#FEF7EC;border-color:#F3E2C2;margin:10px 0'>"
+                    f"✨ <b>{member} hasn't ranked yet.</b> Order the spots below and hit Save to join the board.</div>",
+                    unsafe_allow_html=True)
+
+    cty = dict(zip(vis["Restaurant"], vis["Country"]))
+    left, right = st.columns([0.62, 0.38], gap="large")
     with left:
-        member = st.selectbox("Who are you?", ds.RATERS, key="rank_member")
-        st.markdown(f"{avatar(member)} &nbsp; Ranking as **{member}**", unsafe_allow_html=True)
-
-        key = f"order_{member}"
-        if key not in st.session_state:
-            saved = df[pd.to_numeric(df[member], errors="coerce").notna()].sort_values(member)["Restaurant"].tolist()
-            st.session_state[key] = saved + [n for n in names if n not in saved]
-        order = [n for n in st.session_state[key] if n in names]
-        order += [n for n in names if n not in order]
-        st.session_state[key] = order
-
-        if not _country_ranked(df, member):
-            st.markdown(f"<div class='ax-card' style='background:#FEF7EC;border-color:#F3E2C2;margin:10px 0'>"
-                        f"✨ <b>{member} hasn't ranked yet.</b> Order the spots below and hit Save to join the board.</div>",
-                        unsafe_allow_html=True)
-
-        cty = dict(zip(vis["Restaurant"], vis["Country"]))
         for i, nm in enumerate(order):
             with st.container(border=True):
                 cc = st.columns([0.5, 5, 0.7, 0.7])
@@ -547,32 +552,55 @@ def my_rankings_page(df: pd.DataFrame) -> None:
         if st.session_state.get("_just_saved") == member:
             st.success(f"✓ Saved {member}'s ranking.")
             st.session_state.pop("_just_saved", None)
-
     with right:
-        st.markdown("<div class='ax-card'><div style='font-weight:800'>🔮 Live consensus</div>"
-                    "<div style='font-size:.8rem;color:#8A8F98;margin-top:2px'>Median of everyone's percentiles. "
-                    "Updates the moment you save.</div></div>", unsafe_allow_html=True)
-        _consensus_list(df)
+        st.markdown("<div class='ax-card' style='background:#F6F6F3'><div style='font-weight:800'>How it works</div>"
+                    "<div style='font-size:.82rem;color:#6B7280;margin-top:5px'>Your order becomes a 0–100 percentile "
+                    "(your #1 = 100). Everyone's are combined by <b>median</b>, so one outlier can't sink a group "
+                    "favourite. Save to update the board below.</div></div>", unsafe_allow_html=True)
+
+    st.write("")
+    editorial_consensus(df)
 
 
 def _country_ranked(df: pd.DataFrame, member: str) -> bool:
     return pd.to_numeric(df[member], errors="coerce").notna().any()
 
 
-def _consensus_list(df: pd.DataFrame) -> None:
+def editorial_consensus(df: pd.DataFrame, title: str = "Group Consensus") -> None:
+    """Movie-Ranks-poster-style editorial ranked list of the group consensus:
+    numbered ranks, flag + restaurant + country, the 0-100 MEDIAN with a score bar,
+    and 'RANKED BY' member avatars, on a warm cream panel."""
     tbl = rk.consensus_table(df, min_coverage=1)
+    head = ("<div style='background:#F7F3EC;border:1px solid #E9E1D2;border-radius:16px;padding:20px 24px'>"
+            "<div style='display:flex;align-items:baseline;gap:12px;border-bottom:2px solid #1F2328;padding-bottom:8px'>"
+            "<span style='font-size:.72rem;font-weight:800;color:#B4A88E'>01</span>"
+            f"<span style='font-size:1.25rem;font-weight:800;letter-spacing:.01em'>{title}</span></div>"
+            "<div style='font-size:.78rem;color:#9a917f;margin-top:6px;font-style:italic'>"
+            "Median of everyone's normalised rankings · higher = the group's favourite</div>")
     if tbl.empty:
-        st.caption("No rankings yet — yours will start the board.")
+        st.markdown(head + "<div style='padding:18px 0;color:#9a917f'>No rankings yet — be the first "
+                    "to rank and start the board.</div></div>", unsafe_allow_html=True)
         return
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    idx = consensus_index(df)
+    iso_by_country = dict(zip(df["Country"], df["ISO_A3"]))
+    grid = "display:grid;grid-template-columns:46px 1fr 92px 116px;gap:12px;align-items:center"
+    rows = (f"<div style='{grid};margin-top:14px;font-size:.6rem;font-weight:800;letter-spacing:.09em;"
+            "text-transform:uppercase;color:#B4A88E'><div>#</div><div>Restaurant</div>"
+            "<div>Median</div><div>Ranked by</div></div>")
     for _, r in tbl.iterrows():
-        m = medals.get(int(r["overall_rank"]), f"#{int(r['overall_rank'])}")
-        st.markdown(f"<div style='display:flex;align-items:center;gap:11px;padding:9px 4px;border-bottom:1px solid #F1F1EC'>"
-                    f"<div style='width:26px;font-weight:800'>{m}</div>"
-                    f"<div style='flex:1'><div style='font-weight:700;font-size:.9rem'>{r['restaurant']}</div>"
-                    f"<div style='font-size:.75rem;color:#8A8F98'>{r['country']}</div></div>"
-                    f"<div style='font-weight:800;color:#2E7D5B'>{score10(r['median'])}</div></div>",
-                    unsafe_allow_html=True)
+        med = float(r["median"])
+        barw = max(3, min(100, round(med)))
+        who = idx.get(r["restaurant"], {}).get("ranked_by", [])
+        fl = flag(iso_by_country.get(r["country"], ""))
+        rows += (f"<div style='{grid};padding:13px 0;border-bottom:1px solid #E9E1D2'>"
+                 f"<div style='font-size:1.5rem;font-weight:800'>{int(r['overall_rank'])}</div>"
+                 f"<div><div style='font-weight:700;font-size:1rem'>{fl} {r['restaurant']}</div>"
+                 f"<div style='font-size:.78rem;color:#9a917f'>{r['country']}</div></div>"
+                 f"<div><div style='font-size:1.2rem;font-weight:800'>{med:.1f}</div>"
+                 f"<div style='height:4px;background:#E4DAC6;border-radius:2px;margin-top:4px'>"
+                 f"<div style='height:4px;width:{barw}%;background:#2E7D5B;border-radius:2px'></div></div></div>"
+                 f"<div>{avatars(who, 26)}</div></div>")
+    st.markdown(head + rows + "</div>", unsafe_allow_html=True)
 
 
 # ---------- Leaderboard ----------
@@ -592,21 +620,9 @@ def leaderboard_page(df: pd.DataFrame) -> None:
         st.button("Add your ranking →", type="primary", on_click=goto, args=("My Rankings",), key="lb_cta")
         return
 
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    for _, r in tbl.iterrows():
-        rank = int(r["overall_rank"])
-        cons = idx.get(r["restaurant"], {})
-        who = cons.get("ranked_by", [])
-        st.markdown(
-            f"<div class='ax-card' style='margin-bottom:10px;display:flex;align-items:center;gap:16px'>"
-            f"<div style='font-size:1.4rem;font-weight:800;width:38px'>{medals.get(rank, '#'+str(rank))}</div>"
-            f"<div style='flex:1'><div style='font-weight:700;font-size:1.05rem'>{r['restaurant']}</div>"
-            f"<div style='font-size:.82rem;color:#6B7280'>{r['country']}</div></div>"
-            f"<div style='text-align:right'><span style='font-size:1.3rem;font-weight:800;color:#2E7D5B'>{score10(r['median'])}</span>"
-            f"<span style='font-size:.8rem;color:#9AA0A8'>/10</span></div>"
-            f"<div style='min-width:96px;text-align:right'>{avatars(who, 26)}</div></div>", unsafe_allow_html=True)
+    editorial_consensus(df, title="Official Ranking")
 
-    st.markdown("<div class='ax-label' style='margin-top:16px'>Each person's #1</div>", unsafe_allow_html=True)
+    st.markdown("<div class='ax-label' style='margin-top:18px'>Each person's #1</div>", unsafe_allow_html=True)
     cards = []
     for m in ds.RATERS:
         sub = df[pd.to_numeric(df[m], errors="coerce") == 1]
