@@ -51,9 +51,16 @@ def code(iso3: str) -> str:
     return _A3_A2.get(str(iso3).upper(), str(iso3)[:2].upper())
 
 
-def flag(iso3: str) -> str:
+def flag(iso3: str, height: int = 14) -> str:
+    """Real flag image for use as flair — renders everywhere, unlike flag *emoji*
+    which Windows can't display (they fall back to the 2-letter code). Served as SVG
+    from flagcdn.com. Returns an inline <img> (empty string for unknown ISO)."""
     a2 = _A3_A2.get(str(iso3).upper())
-    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in a2) if a2 else "🌍"
+    if not a2:
+        return ""
+    return (f"<img src='https://flagcdn.com/{a2.lower()}.svg' loading='lazy' alt='{a2}' "
+            f"style='height:{height}px;width:auto;border-radius:2px;vertical-align:-2px;"
+            f"box-shadow:0 0 0 1px rgba(0,0,0,.12);margin-right:2px'>")
 
 
 def goto(page: str) -> None:
@@ -787,6 +794,7 @@ def tile_leaderboard_top3(df: pd.DataFrame) -> None:
                     unsafe_allow_html=True)
     else:
         tint = {1: "#F5D06F", 2: "#D8D8D2", 3: "#E8B588"}
+        iso_by = dict(zip(df["Country"], df["ISO_A3"]))
         html = ""
         for _, r in tbl.head(3).iterrows():
             rank = int(r["overall_rank"])
@@ -794,7 +802,7 @@ def tile_leaderboard_top3(df: pd.DataFrame) -> None:
                      f"<div style='width:26px;height:26px;border-radius:7px;background:{tint.get(rank, '#eee')};"
                      f"display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem'>{rank}</div>"
                      f"<div style='flex:1;min-width:0'><div style='font-weight:700;font-size:.9rem'>{r['restaurant']}</div>"
-                     f"<div style='font-size:.74rem;color:#8A8F98'>{r['country']}</div></div>"
+                     f"<div style='font-size:.74rem;color:#8A8F98'>{flag(iso_by.get(r['country'], ''), 11)} {r['country']}</div></div>"
                      f"<div style='font-weight:800'>{score10(r['median'])} <span style='color:#E0A500'>★</span></div></div>")
         st.markdown(html, unsafe_allow_html=True)
     st.button("View full leaderboard →", on_click=_set_view, args=("leaderboard",),
@@ -833,7 +841,7 @@ def tile_wishlist(df: pd.DataFrame) -> None:
             loc = str(r.get("Notes", "")).split("—")[0].strip()
             html += (f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;"
                      f"padding:7px 0;border-bottom:1px solid #F1F1EC'>"
-                     f"<div style='min-width:0'><div style='font-weight:700;font-size:.86rem'>{r['Restaurant']}</div>"
+                     f"<div style='min-width:0'><div style='font-weight:700;font-size:.86rem'>{flag(r['ISO_A3'], 11)} {r['Restaurant']}</div>"
                      f"<div style='font-size:.72rem;color:#8A8F98'>{loc}</div></div>"
                      f"<span class='ax-pill ax-wishlist' style='white-space:nowrap'>{r['Country']}</span></div>")
         st.markdown(html, unsafe_allow_html=True)
