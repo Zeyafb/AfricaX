@@ -274,13 +274,7 @@ def hero(africa, df: pd.DataFrame) -> None:
                         + legend_html(), unsafe_allow_html=True)
             m = build_map(africa, ds.status_by_iso(df), ds.country_stats(df))
             from streamlit_folium import st_folium
-            state = st_folium(m, width=None, height=430, key="dash_map")
-            if state and state.get("last_object_clicked"):
-                cc = state["last_object_clicked"]
-                hit = country_at_click(africa, cc["lat"], cc["lng"])
-                if hit and hit["iso_a3"] != (st.session_state.get("selected_country") or {}).get("iso_a3"):
-                    st.session_state["selected_country"] = hit
-                    st.rerun()
+            st_folium(m, width=None, height=430, key="dash_map")
     with right:
         _leaderboard_card(df)
 
@@ -591,8 +585,6 @@ def dashboard(africa, df: pd.DataFrame) -> None:
     rank_nudge(df)
     st.write("")
     hero(africa, df)
-    st.write("")
-    selected_band(africa, df)
     st.write("")
     supporting_tiles(africa, df)
     st.write("")
