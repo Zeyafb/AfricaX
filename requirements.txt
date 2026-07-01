@@ -1,4 +1,4 @@
-# AfricaX runtime deps (local CSV backend — no Google Sheets)
+# AfricaX runtime deps
 streamlit>=1.33
 pandas>=2.1
 folium>=0.16
@@ -7,6 +7,10 @@ geopandas>=0.14
 shapely>=2.0
 pyproj>=3.6
 fiona>=1.9
+
+# Persistence backend (Google Sheets — used on Streamlit Cloud; local dev falls back to CSV)
+gspread>=6.0
+google-auth>=2.25
 
 # Dev / tests
 pytest>=8.0

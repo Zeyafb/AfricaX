@@ -264,6 +264,15 @@ def sidebar(africa, df: pd.DataFrame) -> str:
         "<div class='q'>Eat well. Rate honestly.<br>Explore Africa. 🏝️</div></div>",
         unsafe_allow_html=True,
     )
+
+    if ds.using_sheets():
+        badge, colour = "💾 Saved to Google Sheets", "#2E7D5B"
+    else:
+        badge, colour = "💾 Local CSV (dev — not shared)", "#8A8F98"
+    sb.markdown(
+        f"<div style='margin-top:10px;font-size:.72rem;font-weight:700;color:{colour}'>{badge}</div>",
+        unsafe_allow_html=True,
+    )
     return page
 
 
