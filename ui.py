@@ -687,3 +687,271 @@ def add_spot_page(africa, df: pd.DataFrame) -> None:
     idx = names.index(cur["name"]) if cur and cur["name"] in names else 0
     country = st.selectbox("Country", names, index=idx)
     _add_form(country, iso_by_name[country])
+
+
+# ======================= SINGLE-PAGE DASHBOARD =======================
+
+def _set_view(v: str) -> None:
+    st.session_state["view"] = v
+
+
+def _tile_head(title: str, subtitle: str = "") -> str:
+    sub = f"<div style='color:#6B7280;font-size:.8rem;margin-top:1px'>{subtitle}</div>" if subtitle else ""
+    return f"<div style='font-weight:800;font-size:1.02rem'>{title}</div>{sub}"
+
+
+def header_bar(df: pd.DataFrame) -> None:
+    left, right = st.columns([0.44, 0.56])
+    with left:
+        st.markdown("<div style='display:flex;align-items:center;gap:11px'>"
+                    "<span style='font-size:1.7rem'>🍴</span>"
+                    "<div><div class='ax-title' style='font-size:1.7rem'>AFRICAX</div>"
+                    "<div style='color:#6B7280;font-size:.85rem'>African Restaurant Passport 🌐</div></div></div>",
+                    unsafe_allow_html=True)
+    with right:
+        a, b, c = st.columns([1.4, 1.15, 0.95])
+        a.markdown(f"<div style='display:flex;align-items:center;justify-content:flex-end;gap:8px;height:46px'>"
+                   f"<span style='color:#6B7280;font-size:.85rem'>Friends</span>{avatars(ds.RATERS, 32)}</div>",
+                   unsafe_allow_html=True)
+        b.button("🏆 Rank your spots", type="primary", use_container_width=True,
+                 on_click=_set_view, args=("rank",), key="hdr_rank")
+        c.button("＋ Add spot", use_container_width=True, on_click=_set_view, args=("add",), key="hdr_add")
+
+
+def tile_map(africa, df: pd.DataFrame) -> None:
+    st.markdown(_tile_head("Explore Africa"), unsafe_allow_html=True)
+    st.markdown(legend_html(), unsafe_allow_html=True)
+    m = build_map(africa, ds.status_by_iso(df), ds.country_stats(df))
+    from streamlit_folium import st_folium
+    state = st_folium(m, width=None, height=430, key="dash_map")
+    if state and state.get("last_object_clicked"):
+        cc = state["last_object_clicked"]
+        hit = country_at_click(africa, cc["lat"], cc["lng"])
+        if hit and hit["iso_a3"] != (st.session_state.get("selected_country") or {}).get("iso_a3"):
+            st.session_state["selected_country"] = hit
+            st.rerun()
+
+
+def tile_selected_country(df: pd.DataFrame) -> None:
+    sel = st.session_state.get("selected_country")
+    st.markdown(_tile_head("Selected Country"), unsafe_allow_html=True)
+    if not sel:
+        st.markdown("<div style='color:#6B7280;font-size:.88rem;margin-top:8px'>Click a country on the map to see "
+                    "its restaurants, notes, and group consensus.</div>", unsafe_allow_html=True)
+        return
+    name, iso = sel["name"], sel["iso_a3"]
+    rows = df[df["ISO_A3"] == iso]
+    vis, wish = rows[rows["Status"] == ds.STATUS_VISITED], rows[rows["Status"] == ds.STATUS_WISHLIST]
+    kind = "visited" if not vis.empty else ("wishlist" if not wish.empty else "none")
+    pill = status_pill(ds.STATUS_VISITED) if not vis.empty else (status_pill(ds.STATUS_WISHLIST) if not wish.empty else "")
+    st.markdown(f"<div style='display:flex;align-items:center;gap:9px;margin-top:6px'>{code_chip(iso, kind)}"
+                f"<span style='font-size:1.2rem;font-weight:800'>{name}</span>{pill}</div>", unsafe_allow_html=True)
+    idx = consensus_index(df)
+    if not vis.empty:
+        scored = [(r, idx.get(r["Restaurant"])) for _, r in vis.iterrows()]
+        ranked = [t for t in scored if t[1]]
+        r, cons = min(ranked, key=lambda t: t[1]["overall_rank"]) if ranked else (vis.iloc[0], None)
+        dishes = [d.strip() for d in str(r.get("Dishes", "")).split(",") if d.strip()]
+        chips = "".join(chip(d) for d in dishes)
+        notes = str(r.get("Notes", "")).strip()
+        parts = [f"<div style='font-weight:700;font-size:1rem'>{r['Restaurant']}</div>"]
+        if chips:
+            parts.append(f"<div style='margin-top:8px'>{chips}</div>")
+        if notes:
+            parts.append(f"<div style='margin-top:8px;font-size:.85rem;color:#555'>{notes}</div>")
+        if cons:
+            parts.append("<div style='margin-top:10px;background:#EAF4EE;border-radius:8px;padding:8px 12px;"
+                         "display:flex;justify-content:space-between;align-items:center'>"
+                         "<span style='font-weight:700;color:#2E5A44;font-size:.85rem'>👥 Group consensus</span>"
+                         f"<span style='font-weight:800'>{score10(cons['median'])}<span style='color:#8A8F98;"
+                         f"font-weight:600;font-size:.78rem'>/10 · {cons['coverage']} ranked</span></span></div>")
+        else:
+            parts.append("<div style='margin-top:10px;color:#8A8F98;font-size:.85rem'>No rankings yet</div>")
+        st.markdown("<div class='ax-card' style='margin-top:10px'>" + "".join(parts) + "</div>", unsafe_allow_html=True)
+    elif not wish.empty:
+        r = wish.iloc[0]
+        loc = str(r.get("Notes", "")).split("—")[0].strip()
+        st.markdown("<div class='ax-card' style='margin-top:10px;background:#FBF8FE;border-color:#E4D3F5'>"
+                    "<div style='font-size:.78rem;font-weight:700;color:#8B5FBF'>📌 Want to go</div>"
+                    f"<div style='margin-top:6px;font-weight:700'>{r['Restaurant']}</div>"
+                    f"<div style='font-size:.8rem;color:#8A8F98'>{loc}</div></div>", unsafe_allow_html=True)
+    else:
+        st.caption("No spots logged here yet.")
+
+
+def tile_leaderboard_top3(df: pd.DataFrame) -> None:
+    st.markdown(_tile_head("🏆 Group Leaderboard", "Top 3 ranked visited spots"), unsafe_allow_html=True)
+    tbl = rk.consensus_table(df, min_coverage=1)
+    if tbl.empty:
+        st.markdown("<div style='color:#8A8F98;font-size:.85rem;margin-top:10px'>No rankings yet.</div>",
+                    unsafe_allow_html=True)
+    else:
+        tint = {1: "#F5D06F", 2: "#D8D8D2", 3: "#E8B588"}
+        html = ""
+        for _, r in tbl.head(3).iterrows():
+            rank = int(r["overall_rank"])
+            html += (f"<div style='display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px solid #F1F1EC'>"
+                     f"<div style='width:26px;height:26px;border-radius:7px;background:{tint.get(rank, '#eee')};"
+                     f"display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem'>{rank}</div>"
+                     f"<div style='flex:1;min-width:0'><div style='font-weight:700;font-size:.9rem'>{r['restaurant']}</div>"
+                     f"<div style='font-size:.74rem;color:#8A8F98'>{r['country']}</div></div>"
+                     f"<div style='font-weight:800'>{score10(r['median'])} <span style='color:#E0A500'>★</span></div></div>")
+        st.markdown(html, unsafe_allow_html=True)
+    st.button("View full leaderboard →", on_click=_set_view, args=("leaderboard",),
+              key="dash_lb_full", use_container_width=True)
+
+
+def tile_my_rankings_top5(df: pd.DataFrame) -> None:
+    st.markdown(_tile_head("👤 My Rankings (Top 5)", "A member's personal order"), unsafe_allow_html=True)
+    member = st.selectbox("Viewing as", ds.RATERS, key="dash_member", label_visibility="collapsed")
+    sub = df[pd.to_numeric(df[member], errors="coerce").notna()].copy()
+    if sub.empty:
+        st.markdown(f"<div style='color:#8A8F98;font-size:.85rem;margin-top:6px'>{member} hasn't ranked yet.</div>",
+                    unsafe_allow_html=True)
+    else:
+        sub["_r"] = pd.to_numeric(sub[member], errors="coerce")
+        html = ""
+        for _, r in sub.sort_values("_r").head(5).iterrows():
+            html += (f"<div style='display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #F1F1EC'>"
+                     f"<div style='width:23px;height:23px;border-radius:50%;background:#2E7D5B;color:#fff;"
+                     f"display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.75rem'>{int(r['_r'])}</div>"
+                     f"<div style='flex:1;min-width:0'><div style='font-weight:700;font-size:.86rem'>{r['Restaurant']}</div>"
+                     f"<div style='font-size:.72rem;color:#8A8F98'>{r['Country']}</div></div></div>")
+        st.markdown(html, unsafe_allow_html=True)
+    st.button("Edit my ranking →", on_click=_set_view, args=("rank",), key="dash_myrank", use_container_width=True)
+
+
+def tile_wishlist(df: pd.DataFrame) -> None:
+    st.markdown(_tile_head("💜 Wishlist & Next Up", "Places on our radar"), unsafe_allow_html=True)
+    wish = ds.wishlist(df)
+    if wish.empty:
+        st.markdown("<div style='color:#8A8F98;font-size:.85rem;margin-top:8px'>Nothing on the wishlist yet.</div>",
+                    unsafe_allow_html=True)
+    else:
+        html = ""
+        for _, r in wish.head(5).iterrows():
+            loc = str(r.get("Notes", "")).split("—")[0].strip()
+            html += (f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;"
+                     f"padding:7px 0;border-bottom:1px solid #F1F1EC'>"
+                     f"<div style='min-width:0'><div style='font-weight:700;font-size:.86rem'>{r['Restaurant']}</div>"
+                     f"<div style='font-size:.72rem;color:#8A8F98'>{loc}</div></div>"
+                     f"<span class='ax-pill ax-wishlist' style='white-space:nowrap'>{r['Country']}</span></div>")
+        st.markdown(html, unsafe_allow_html=True)
+    st.button("View full wishlist →", on_click=_set_view, args=("wishlist",), key="dash_wish", use_container_width=True)
+
+
+def tile_quick_add(africa, df: pd.DataFrame) -> None:
+    st.markdown(_tile_head("➕ Quick Add Spot", "Add a restaurant to your passport"), unsafe_allow_html=True)
+    names = sorted(africa["name"].tolist())
+    iso_by = dict(zip(africa["name"], africa["iso_a3"]))
+    with st.form("dash_quick_add", clear_on_submit=True):
+        country = st.selectbox("Country", names, index=None, placeholder="Select country")
+        restaurant = st.text_input("Restaurant name", placeholder="e.g., Le Tanjia")
+        dishes = st.text_input("Dishes (optional)", placeholder="e.g., tagine, couscous")
+        kind = st.radio("Type", ["Visited", "Wishlist"], horizontal=True)
+        notes = st.text_area("Notes (optional)", placeholder="Share your experience…")
+        if st.form_submit_button("Add to passport", type="primary", use_container_width=True):
+            if not country or not restaurant.strip():
+                st.error("Country and restaurant name are required.")
+            else:
+                row = {"Country": country, "ISO_A3": iso_by[country], "Restaurant": restaurant.strip(),
+                       "Dishes": dishes.strip(), "Notes": notes.strip(),
+                       "Status": ds.STATUS_VISITED if kind == "Visited" else ds.STATUS_WISHLIST}
+                if kind == "Visited":
+                    row["Visit Date"] = pd.Timestamp.today().normalize()
+                ds.append_row(row)
+                st.success(f"Added {restaurant.strip()}!" + (" Rank it via Rank your spots." if kind == "Visited" else ""))
+                st.cache_data.clear()
+                st.rerun()
+
+
+def tile_passport_progress(df: pd.DataFrame, total: int) -> None:
+    visited = ds.visited(df)["ISO_A3"].nunique()
+    pct = round(100 * visited / total) if total else 0
+    ring = (f"<div style='width:66px;height:66px;border-radius:50%;flex:none;"
+            f"background:conic-gradient(#2E7D5B {pct * 3.6}deg,#E6E6E6 0)'>"
+            f"<div style='width:66px;height:66px;display:flex;align-items:center;justify-content:center'>"
+            f"<div style='width:48px;height:48px;border-radius:50%;background:#fff;display:flex;align-items:center;"
+            f"justify-content:center;font-weight:800;font-size:.85rem'>{pct}%</div></div></div>")
+    st.markdown(f"<div style='display:flex;align-items:center;gap:15px'>{ring}"
+                f"<div><div style='font-weight:800;font-size:1.02rem'>Passport Progress</div>"
+                f"<div style='color:#4b5158;font-size:.86rem;margin-top:2px'>{visited} of {total} countries visited</div>"
+                f"<div style='color:#9AA0A8;font-size:.8rem'>Keep exploring Africa!</div></div></div>",
+                unsafe_allow_html=True)
+
+
+def tile_recent_activity(df: pd.DataFrame) -> None:
+    st.markdown(_tile_head("🕐 Recent Activity"), unsafe_allow_html=True)
+    v = ds.visited(df).copy()
+    v["_d"] = pd.to_datetime(v["Visit Date"], errors="coerce")
+    v = v.sort_values("_d", ascending=False).head(4)
+    if v.empty:
+        st.markdown("<div style='color:#8A8F98;font-size:.85rem;margin-top:8px'>No visits logged yet.</div>",
+                    unsafe_allow_html=True)
+        return
+    html = ""
+    for _, r in v.iterrows():
+        when = r["_d"].strftime("%b %d, %Y") if pd.notna(r["_d"]) else ""
+        html += (f"<div style='display:flex;justify-content:space-between;gap:8px;padding:6px 0;font-size:.84rem'>"
+                 f"<span>🟢 Visited <b>{r['Restaurant']}</b> in {r['Country']}</span>"
+                 f"<span style='color:#9AA0A8;white-space:nowrap'>{when}</span></div>")
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def tile_tip() -> None:
+    st.markdown(_tile_head("💡 Tip"), unsafe_allow_html=True)
+    st.markdown("<div style='color:#4b5158;font-size:.86rem;margin-top:8px'>Click a country on the map to explore it, "
+                "use <b>Quick Add</b> to log spots you've visited, and <b>Rank your spots</b> to move the group "
+                "leaderboard.</div>", unsafe_allow_html=True)
+
+
+def dashboard(africa, df: pd.DataFrame) -> None:
+    total = len(africa)
+    header_bar(df)
+    st.write("")
+    kpi_row(df)
+    st.write("")
+    r1 = st.columns([0.42, 0.33, 0.25], gap="medium")
+    with r1[0]:
+        with st.container(border=True):
+            tile_map(africa, df)
+    with r1[1]:
+        with st.container(border=True):
+            tile_selected_country(df)
+    with r1[2]:
+        with st.container(border=True):
+            tile_leaderboard_top3(df)
+    r2 = st.columns(3, gap="medium")
+    with r2[0]:
+        with st.container(border=True):
+            tile_my_rankings_top5(df)
+    with r2[1]:
+        with st.container(border=True):
+            tile_wishlist(df)
+    with r2[2]:
+        with st.container(border=True):
+            tile_quick_add(africa, df)
+    r3 = st.columns(3, gap="medium")
+    with r3[0]:
+        with st.container(border=True):
+            tile_passport_progress(df, total)
+    with r3[1]:
+        with st.container(border=True):
+            tile_recent_activity(df)
+    with r3[2]:
+        with st.container(border=True):
+            tile_tip()
+
+
+def _back_button(key: str) -> None:
+    st.button("← Back to dashboard", on_click=_set_view, args=("dashboard",), key=key)
+
+
+def rank_view(df: pd.DataFrame) -> None:
+    _back_button("bk_rank")
+    my_rankings_page(df)
+
+
+def leaderboard_view(df: pd.DataFrame) -> None:
+    _back_button("bk_lb")
+    leaderboard_page(df)
