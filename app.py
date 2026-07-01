@@ -1,12 +1,11 @@
 """AfricaX — African Restaurant Passport.
 
-A local, CSV-backed Streamlit app: an accessible clickable map of Africa where a
-group of friends logs restaurant visits and ranks them. Group standing is by
-**consensus ranking** (median of everyone's normalised orders — the Movie Ranks
-method), surfaced as an X/10 star. Members submit their own order on My Rankings.
+A local/Sheets-backed Streamlit app built to the AfricaX.dc.html design: a map-first
+"restaurant passport" where the group logs visits, ranks them, and watches the group
+consensus (median of everyone's normalised orders) update. Members rank on My Rankings.
 
 Run:  streamlit run app.py
-Data: data/restaurants.csv  (owned by data_store.py)
+Data: Google Sheet when configured, else data/restaurants.csv  (owned by data_store.py)
 """
 
 from __future__ import annotations
@@ -28,20 +27,20 @@ def main() -> None:
 
     missing = ds.missing_columns(df)
     if missing:
-        st.error(f"Data schema problem — missing columns: {', '.join(missing)}. Check data/restaurants.csv.")
+        st.error(f"Data schema problem — missing columns: {', '.join(missing)}. Check the data source.")
         st.stop()
 
     page = ui.sidebar(africa, df)
     ui.header(df)
-    ui.kpi_cards(df)
+    ui.kpi_row(df)
     st.write("")
 
     if page == "Map":
         ui.map_page(africa, df)
-    elif page == "Leaderboard":
-        ui.leaderboard_page(df)
     elif page == "My Rankings":
         ui.my_rankings_page(df)
+    elif page == "Leaderboard":
+        ui.leaderboard_page(df)
     elif page == "All Spots":
         ui.all_spots_page(df)
     elif page == "Wishlist":
@@ -49,7 +48,9 @@ def main() -> None:
     elif page == "Add Spot":
         ui.add_spot_page(africa, df)
 
-    st.caption("💡 Tip: use the sidebar to jump around, rank your spots, or add new places to the wishlist.")
+    st.markdown("<div style='margin-top:28px;font-size:.78rem;color:#B0B4BA'>💡 Tip: rank your spots to move the "
+                "leaderboard, jump countries from the sidebar, or add new places to the wishlist.</div>",
+                unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
